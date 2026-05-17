@@ -8,6 +8,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import requests
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 
 
 st.set_page_config(
@@ -238,6 +239,7 @@ require_password()
 
 st.title("LD2450 Retail Heatmap")
 st.caption("Historical occupancy and activity zones from ESP32 + HLK-LD2450 snapshots.")
+st_autorefresh(interval=10_000, key="ld2450_dashboard_autorefresh")
 
 if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
     st.warning(
@@ -257,7 +259,7 @@ with st.sidebar:
 
     sensor_id = st.selectbox("Sensor", sensor_ids)
     hours = st.slider("History window", min_value=1, max_value=168, value=24, step=1)
-    st.caption("The dashboard refreshes from Supabase every few seconds.")
+    st.caption("The dashboard refreshes from Supabase every 10 seconds.")
     if st.button("Refresh now"):
         st.cache_data.clear()
 
