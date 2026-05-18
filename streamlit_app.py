@@ -119,6 +119,87 @@ CSS = """
     margin-bottom: 12px;
   }
 
+  .heatmap-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    padding: 14px 16px;
+    background: #ffffff;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    margin-bottom: 14px;
+    box-shadow: 0 1px 2px rgba(16, 24, 40, .04);
+  }
+
+  .heatmap-banner .title {
+    color: var(--ink);
+    font-size: 18px;
+    font-weight: 760;
+    line-height: 1.2;
+  }
+
+  .heatmap-banner .subtitle {
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.35;
+    margin-top: 4px;
+  }
+
+  .heatmap-legend {
+    min-width: 240px;
+  }
+
+  .heatmap-legend .label-row {
+    display: flex;
+    justify-content: space-between;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    margin-bottom: 6px;
+  }
+
+  .heatmap-gradient {
+    height: 12px;
+    border-radius: 999px;
+    border: 1px solid rgba(17, 24, 39, .08);
+    background: linear-gradient(90deg, #eef4f7 0%, #9ad7ca 32%, #14956f 58%, #f0b84a 78%, #e86e32 100%);
+  }
+
+  .callout-card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 15px 16px;
+    box-shadow: 0 1px 2px rgba(16, 24, 40, .04);
+    margin-bottom: 12px;
+  }
+
+  .callout-card .label {
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 750;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+  }
+
+  .callout-card .value {
+    color: var(--ink);
+    font-size: 24px;
+    line-height: 1.1;
+    font-weight: 780;
+    margin-top: 8px;
+  }
+
+  .callout-card .note {
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.35;
+    margin-top: 8px;
+  }
+
   div[data-testid="stMetric"] {
     background: var(--panel);
     border: 1px solid var(--line);
@@ -497,6 +578,260 @@ def metric_card(label: str, value: str, note: str = "") -> None:
     )
 
 
+def callout_card(label: str, value: str, note: str = "") -> None:
+    st.markdown(
+        f"""
+        <div class="callout-card">
+          <div class="label">{label}</div>
+          <div class="value">{value}</div>
+          <div class="note">{note}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def clean_label(value: Any) -> str:
+    return str(value or "").replace("_", " ").replace("-", " ")
+
+
+def format_minutes(value: float) -> str:
+    if value <= 0:
+        return "0m"
+    if value < 1:
+        return "<1m"
+    if value < 60:
+        return f"{value:.1f}m"
+    return f"{value / 60:.1f}h"
+
+
+def coerce_matrix(matrix: Any, rows: int, cols: int) -> list[list[float]]:
+    coerced = empty_matrix(rows, cols)
+    for row_idx, row in enumerate(matrix or []):
+        if row_idx >= rows:
+            break
+        for col_idx, value in enumerate(row or []):
+            if col_idx >= cols:
+                break
+            coerced[row_idx][col_idx] = float(value or 0)
+    return coerced
+
+
+def current_zone_labels(current_matrix: list[list[float]], x_names: list[str], y_names: list[str]) -> list[str]:
+    labels: list[str] = []
+    for row_idx, row in enumerate(current_matrix):
+        for col_idx, value in enumerate(row):
+            count = int(value or 0)
+            if count <= 0 or row_idx >= len(y_names) or col_idx >= len(x_names):
+                continue
+            zone = clean_label(f"{y_names[row_idx]} {x_names[col_idx]}").upper()
+            labels.append(f"{zone} ({count})")
+    return labels
+
+
+def current_target_points(latest: pd.Series, is_live: bool, x_edges: list[int], y_edges: list[int]) -> pd.DataFrame:
+    if not is_live:
+        return pd.DataFrame()
+
+    rows: list[dict[str, Any]] = []
+    for target in latest.get("targets") or []:
+        if not target.get("present") or not target.get("counted"):
+            continue
+
+        row_idx = target.get("zoneRow")
+        col_idx = target.get("zoneCol")
+        if row_idx is None or col_idx is None:
+            continue
+        row_idx = int(row_idx)
+        col_idx = int(col_idx)
+        if row_idx < 0 or col_idx < 0 or row_idx + 1 >= len(y_edges) or col_idx + 1 >= len(x_edges):
+            continue
+
+        x_mm = float(target.get("xMm") or 0)
+        y_mm = float(target.get("yMm") or 0)
+        x_span = max(float(x_edges[col_idx + 1] - x_edges[col_idx]), 1.0)
+        y_span = max(float(y_edges[row_idx + 1] - y_edges[row_idx]), 1.0)
+        x_ratio = min(max((x_mm - x_edges[col_idx]) / x_span, 0.08), 0.92)
+        y_ratio = min(max((y_mm - y_edges[row_idx]) / y_span, 0.12), 0.88)
+
+        rows.append(
+            {
+                "x": col_idx + x_ratio,
+                "y": row_idx + y_ratio,
+                "id": target.get("id"),
+                "zone": target.get("zone"),
+                "distance_mm": target.get("distanceMm"),
+                "motion": target.get("motion"),
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def render_heatmap_banner(title: str, subtitle: str) -> None:
+    st.markdown(
+        f"""
+        <div class="heatmap-banner">
+          <div>
+            <div class="title">{title}</div>
+            <div class="subtitle">{subtitle}</div>
+          </div>
+          <div class="heatmap-legend">
+            <div class="label-row"><span>Low dwell</span><span>High dwell</span></div>
+            <div class="heatmap-gradient"></div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_retail_floor_heatmap(
+    dwell_matrix: list[list[float]],
+    current_matrix: list[list[float]],
+    current_targets: pd.DataFrame,
+    x_names: list[str],
+    y_names: list[str],
+    title: str,
+    is_live: bool,
+) -> None:
+    rows = len(y_names)
+    cols = len(x_names)
+    dwell = coerce_matrix(dwell_matrix, rows, cols)
+    current = coerce_matrix(current_matrix if is_live else [], rows, cols)
+    max_value = max([value for row in dwell for value in row] + [0.0])
+
+    display_text: list[list[str]] = []
+    customdata: list[list[list[Any]]] = []
+    for row_idx in reversed(range(rows)):
+        text_row: list[str] = []
+        custom_row: list[list[Any]] = []
+        for col_idx in range(cols):
+            dwell_value = dwell[row_idx][col_idx]
+            current_count = int(current[row_idx][col_idx])
+            zone_label = clean_label(f"{y_names[row_idx]} {x_names[col_idx]}").upper()
+            current_label = f"<br><b>NOW {current_count}</b>" if current_count else ""
+            dwell_label = format_minutes(dwell_value) if dwell_value else ""
+            text_row.append(f"<b>{dwell_label}</b>{current_label}")
+            custom_row.append([zone_label, dwell_value, current_count])
+        display_text.append(text_row)
+        customdata.append(custom_row)
+
+    z = list(reversed(dwell))
+    y_display = [clean_label(name).upper() for name in reversed(y_names)]
+    x_display = [clean_label(name).upper() for name in x_names]
+    x_values = [col_idx + 0.5 for col_idx in range(cols)]
+    y_values = [row_idx + 0.5 for row_idx in reversed(range(rows))]
+    colorscale = [
+        [0.0, "#eef4f7"],
+        [0.18, "#cfece6"],
+        [0.42, "#78c7b2"],
+        [0.62, "#14956f"],
+        [0.80, "#f0b84a"],
+        [1.0, "#e86e32"],
+    ]
+
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=z,
+            x=x_values,
+            y=y_values,
+            text=display_text,
+            customdata=customdata,
+            texttemplate="%{text}",
+            colorscale=colorscale,
+            zmin=0,
+            zmax=max(max_value, 1.0),
+            xgap=9,
+            ygap=9,
+            hovertemplate=(
+                "<b>%{customdata[0]}</b><br>"
+                "Dwell: %{customdata[1]:.2f} person-min<br>"
+                "People now: %{customdata[2]}<extra></extra>"
+            ),
+            colorbar=dict(
+                title="person-min",
+                thickness=14,
+                len=0.82,
+                outlinewidth=0,
+            ),
+        )
+    )
+
+    if is_live and not current_targets.empty:
+        plotted = current_targets.copy()
+        fig.add_trace(
+            go.Scatter(
+                x=plotted["x"],
+                y=plotted["y"],
+                mode="markers+text",
+                marker=dict(
+                    size=30,
+                    color="#111827",
+                    symbol="circle",
+                    line=dict(color="#ffffff", width=3),
+                ),
+                text=plotted["id"].map(lambda value: f"{int(value)}" if pd.notna(value) else ""),
+                textfont=dict(color="#ffffff", size=13),
+                customdata=plotted[["zone", "distance_mm", "motion"]],
+                hovertemplate=(
+                    "<b>Target %{text}</b><br>"
+                    "%{customdata[0]}<br>"
+                    "%{customdata[1]} mm | %{customdata[2]}<extra></extra>"
+                ),
+                name="Current target",
+            )
+        )
+
+    sensor_x = cols / 2
+    fig.add_shape(
+        type="path",
+        path=f"M {sensor_x - 0.18},-0.24 L {sensor_x + 0.18},-0.24 L {sensor_x},0.08 Z",
+        fillcolor="#111827",
+        line=dict(color="#111827", width=1),
+    )
+    fig.add_annotation(
+        x=sensor_x,
+        y=-0.36,
+        text="RADAR",
+        showarrow=False,
+        font=dict(size=11, color="#475467"),
+    )
+
+    fig.update_layout(
+        title=title,
+        height=560,
+        margin=dict(l=10, r=10, t=58, b=20),
+        paper_bgcolor="#ffffff",
+        plot_bgcolor="#ffffff",
+        font_color="#111827",
+        showlegend=False,
+    )
+    fig.update_traces(textfont=dict(size=16, color="#111827"), selector=dict(type="heatmap"))
+    fig.update_xaxes(
+        side="top",
+        ticks="",
+        showgrid=False,
+        zeroline=False,
+        title="",
+        range=[0, cols],
+        tickmode="array",
+        tickvals=x_values,
+        ticktext=x_display,
+    )
+    fig.update_yaxes(
+        ticks="",
+        showgrid=False,
+        zeroline=False,
+        title="Distance from radar",
+        range=[-0.46, rows],
+        tickmode="array",
+        tickvals=[row_idx + 0.5 for row_idx in range(rows)],
+        ticktext=[clean_label(name).upper() for name in y_names],
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
 def render_heatmap(matrix: list[list[float]], x_names: list[str], y_names: list[str], title: str, unit: str) -> None:
     display = list(reversed(matrix))
     y_display = list(reversed(y_names))
@@ -746,29 +1081,89 @@ if not is_live:
         "Treat live occupancy as unknown until the ESP32 starts uploading again."
     )
 
-metric_cols = st.columns(5)
-with metric_cols[0]:
-    people_now_label = str(last_people_now) if is_live else "--"
-    people_now_note = (
-        f"<span class='{health_class}'>{health_text}</span> | {latest_age_s:.0f}s ago"
-        if is_live
-        else f"<span class='{health_class}'>{health_text}</span> | last was {last_people_now}"
-    )
-    metric_card("People Now", people_now_label, people_now_note)
-with metric_cols[1]:
-    metric_card("Estimated Visits", f"{int(summary['estimated_visits'])}", f"{int(summary['peak_people'])} peak occupancy")
-with metric_cols[2]:
-    metric_card("Avg Dwell", format_seconds(summary["avg_dwell_s"]), f"{summary['person_minutes']:.1f} person-min total")
-with metric_cols[3]:
-    metric_card("Engagement", f"{summary['engagement_rate'] * 100:.0f}%", f"{summary['engaged_minutes']:.1f} occupied minutes")
-with metric_cols[4]:
-    top_zone = zone_table.iloc[0]["zone"] if not zone_table.empty else "none"
-    top_zone_label = str(top_zone).replace("-", " ")
-    metric_card("Top Zone", top_zone_label, f"{zone_table.iloc[0]['dwell_minutes']:.1f} dwell min" if not zone_table.empty else "No dwell yet")
+latest_zone_now = coerce_matrix(latest.get("zone_now") or [], len(y_names), len(x_names))
+current_heatmap_matrix = latest_zone_now if is_live else empty_matrix(len(y_names), len(x_names))
+current_targets = current_target_points(latest, is_live, x_edges, y_edges)
+active_zone_labels = current_zone_labels(current_heatmap_matrix, x_names, y_names)
+active_zone_text = ", ".join(active_zone_labels[:3]) if active_zone_labels else ("Clear" if is_live else "Offline")
+top_zone = zone_table.iloc[0]["zone"] if not zone_table.empty else "none"
+top_zone_label = clean_label(top_zone).upper()
 
-tabs = st.tabs(["Executive View", "Zones", "Dwell", "Campaign Impact", "Targets", "Data Health"])
+tabs = st.tabs(["Heatmap", "Executive View", "Zones", "Dwell", "Campaign Impact", "Targets", "Data Health"])
 
 with tabs[0]:
+    render_heatmap_banner(
+        "Retail Floor Heatmap",
+        f"{hours}h dwell depth with live occupancy overlay. Darker cells held attention longer.",
+    )
+    render_retail_floor_heatmap(
+        zone_dwell_matrix,
+        current_heatmap_matrix,
+        current_targets,
+        x_names,
+        y_names,
+        "Dwell Depth by Zone",
+        is_live,
+    )
+
+    metric_cols = st.columns(5)
+    with metric_cols[0]:
+        people_now_label = str(last_people_now) if is_live else "--"
+        people_now_note = (
+            f"<span class='{health_class}'>{health_text}</span> | {latest_age_s:.0f}s ago"
+            if is_live
+            else f"<span class='{health_class}'>{health_text}</span> | last was {last_people_now}"
+        )
+        metric_card("People Now", people_now_label, people_now_note)
+    with metric_cols[1]:
+        metric_card("Estimated Visits", f"{int(summary['estimated_visits'])}", f"{int(summary['peak_people'])} peak occupancy")
+    with metric_cols[2]:
+        metric_card("Avg Dwell", format_seconds(summary["avg_dwell_s"]), f"{summary['person_minutes']:.1f} person-min total")
+    with metric_cols[3]:
+        metric_card("Engagement", f"{summary['engagement_rate'] * 100:.0f}%", f"{summary['engaged_minutes']:.1f} occupied minutes")
+    with metric_cols[4]:
+        metric_card("Top Zone", top_zone_label, f"{zone_table.iloc[0]['dwell_minutes']:.1f} dwell min" if not zone_table.empty else "No dwell yet")
+
+    insight_cols = st.columns(4)
+    with insight_cols[0]:
+        callout_card("Current Position", active_zone_text, "Live zone count" if is_live else "Waiting for fresh ESP32 uploads")
+    with insight_cols[1]:
+        if not zone_table.empty:
+            top = zone_table.iloc[0]
+            callout_card(
+                "Deepest Zone",
+                clean_label(top["zone"]).upper(),
+                f"{format_minutes(float(top['dwell_minutes']))} dwell in selected window",
+            )
+    with insight_cols[2]:
+        if not zone_table.empty:
+            top = zone_table.iloc[0]
+            callout_card(
+                "Attention Share",
+                f"{float(top['dwell_share']) * 100:.0f}%",
+                "Share of all measured dwell time",
+            )
+    with insight_cols[3]:
+        callout_card("Freshness", health_text, f"Last upload {format_seconds(latest_age_s)} ago")
+
+    st.subheader("Zone Ranking")
+    ranking = zone_table.head(8).copy()
+    if not ranking.empty:
+        ranking["Zone"] = ranking["zone"].map(lambda value: clean_label(value).upper())
+        ranking["Dwell"] = ranking["dwell_minutes"].map(format_minutes)
+        ranking["Attention share"] = (ranking["dwell_share"] * 100).round(1)
+        st.dataframe(
+            ranking[["Zone", "Dwell", "occupied_minutes", "estimated_visits", "Attention share"]].rename(
+                columns={
+                    "occupied_minutes": "Occupied min",
+                    "estimated_visits": "Visits",
+                }
+            ).round(2),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+with tabs[1]:
     left, right = st.columns([1.25, 1])
     with left:
         timeline = df[["captured_at", "people_now"]].copy()
@@ -831,10 +1226,18 @@ with tabs[0]:
         f"{len(previous_df)} previous",
     )
 
-with tabs[1]:
+with tabs[2]:
     left, right = st.columns(2)
     with left:
-        render_heatmap(zone_dwell_matrix, x_names, y_names, "Zone Dwell Heatmap", "person-min")
+        render_retail_floor_heatmap(
+            zone_dwell_matrix,
+            current_heatmap_matrix,
+            current_targets,
+            x_names,
+            y_names,
+            "Zone Dwell Heatmap",
+            is_live,
+        )
     with right:
         render_heatmap(zone_occupied_matrix, x_names, y_names, "Zone Occupied-Time Heatmap", "min")
 
@@ -863,7 +1266,7 @@ with tabs[1]:
         mime="text/csv",
     )
 
-with tabs[2]:
+with tabs[3]:
     left, right = st.columns([1, 1])
     with left:
         hourly = explode_hourly_zone_dwell(df, x_names, y_names)
@@ -914,7 +1317,7 @@ with tabs[2]:
             hide_index=True,
         )
 
-with tabs[3]:
+with tabs[4]:
     st.markdown('<div class="section-note">Current window compared with the immediately preceding window of the same length.</div>', unsafe_allow_html=True)
     comp_cols = st.columns(4)
     comp_cols[0].metric(
@@ -970,7 +1373,7 @@ with tabs[3]:
     else:
         st.info("Previous-period comparison will appear once there is enough history.")
 
-with tabs[4]:
+with tabs[5]:
     render_floor_map(targets, x_edges, y_edges, x_names, y_names)
 
     left, right = st.columns(2)
@@ -991,7 +1394,7 @@ with tabs[4]:
         else:
             st.dataframe(latest_targets, use_container_width=True, hide_index=True)
 
-with tabs[5]:
+with tabs[6]:
     latest_network = latest.get("network") or {}
     latest_raw = latest.get("raw_payload") or {}
     latest_snapshot = latest_raw.get("snapshot") or {}
