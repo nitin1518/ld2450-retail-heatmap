@@ -16,6 +16,8 @@ st.set_page_config(
     layout="wide",
 )
 
+LIVE_FEED_TIMEOUT_S = 30
+
 
 CSS = """
 <style>
@@ -731,12 +733,28 @@ for _, record in df.iterrows():
 
 sessions = occupied_sessions(df, session_gap_s=session_gap_s)
 latest_age_s = (datetime.now(timezone.utc) - latest["captured_at"].to_pydatetime()).total_seconds()
-health_text = "Online" if latest_age_s <= 30 else "Delayed"
-health_class = "status-ok" if latest_age_s <= 30 else "status-warn"
+is_live = latest_age_s <= LIVE_FEED_TIMEOUT_S
+last_people_now = int(summary["people_now"])
+health_text = "Online" if is_live else "Offline"
+health_class = "status-ok" if is_live else "status-warn"
+
+if not is_live:
+    st.warning(
+        "Live radar feed is stale. "
+        f"The last snapshot arrived {format_seconds(latest_age_s)} ago and reported "
+        f"{last_people_now} {'person' if last_people_now == 1 else 'people'}. "
+        "Treat live occupancy as unknown until the ESP32 starts uploading again."
+    )
 
 metric_cols = st.columns(5)
 with metric_cols[0]:
-    metric_card("People Now", f"{int(summary['people_now'])}", f"<span class='{health_class}'>{health_text}</span> | {latest_age_s:.0f}s ago")
+    people_now_label = str(last_people_now) if is_live else "--"
+    people_now_note = (
+        f"<span class='{health_class}'>{health_text}</span> | {latest_age_s:.0f}s ago"
+        if is_live
+        else f"<span class='{health_class}'>{health_text}</span> | last was {last_people_now}"
+    )
+    metric_card("People Now", people_now_label, people_now_note)
 with metric_cols[1]:
     metric_card("Estimated Visits", f"{int(summary['estimated_visits'])}", f"{int(summary['peak_people'])} peak occupancy")
 with metric_cols[2]:
