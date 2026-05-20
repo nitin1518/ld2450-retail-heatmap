@@ -2564,14 +2564,25 @@ elif active_view == "Time Replay":
             st.session_state["replay_index"] = next_index
             st.session_state["replay_last_tick"] = tick
 
-    replay_index = st.slider(
-        "Replay position",
+    replay_start_time = df.iloc[0]["captured_at"]
+    replay_end_time = df.iloc[-1]["captured_at"]
+    total_replay_seconds = int(max(0, (replay_end_time - replay_start_time).total_seconds()))
+    current_replay_time = df.iloc[int(st.session_state["replay_index"])]["captured_at"]
+    current_offset_seconds = int(max(0, (current_replay_time - replay_start_time).total_seconds()))
+    offset_step_seconds = max(1, min(60, max(total_replay_seconds, 1) // 240 or 1))
+    replay_offset_seconds = st.slider(
+        "Time from start",
         min_value=0,
-        max_value=max(replay_len - 1, 0),
-        value=int(st.session_state["replay_index"]),
-        help="0 is the first snapshot in the selected analysis window.",
+        max_value=max(total_replay_seconds, 0),
+        value=min(current_offset_seconds, max(total_replay_seconds, 0)),
+        step=offset_step_seconds,
+        format="%d sec",
+        help="Scrub through the selected analysis window by elapsed time.",
     )
-    if replay_index != st.session_state["replay_index"]:
+    st.caption(f"Selected offset: {format_seconds(float(replay_offset_seconds))} from the first loaded snapshot")
+    requested_replay_time = replay_start_time + timedelta(seconds=int(replay_offset_seconds))
+    replay_index = int((df["captured_at"] - requested_replay_time).abs().to_numpy().argmin())
+    if replay_index != int(st.session_state["replay_index"]):
         st.session_state["replay_index"] = replay_index
         st.rerun()
 
