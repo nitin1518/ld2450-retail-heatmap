@@ -1730,6 +1730,206 @@ def render_floor_map(
     st.plotly_chart(fig, width="stretch")
 
 
+def activity_color(value: float, max_value: float) -> str:
+    if max_value <= 0 or value <= 0:
+        return "#e8eef3"
+    ratio = min(max(value / max_value, 0.0), 1.0)
+    if ratio < 0.25:
+        return "#9ad7ca"
+    if ratio < 0.55:
+        return "#14956f"
+    if ratio < 0.78:
+        return "#f0b84a"
+    return "#e86e32"
+
+
+def add_zone_prism(
+    fig: go.Figure,
+    x0: float,
+    x1: float,
+    y0: float,
+    y1: float,
+    height: float,
+    color: str,
+    name: str,
+    value_label: str,
+) -> None:
+    xs = [x0, x1, x1, x0, x0, x1, x1, x0]
+    ys = [y0, y0, y1, y1, y0, y0, y1, y1]
+    zs = [0, 0, 0, 0, height, height, height, height]
+    fig.add_trace(
+        go.Mesh3d(
+            x=xs,
+            y=ys,
+            z=zs,
+            i=[0, 0, 4, 4, 0, 0, 1, 1, 2, 2, 3, 3],
+            j=[1, 2, 6, 7, 4, 5, 5, 6, 6, 7, 7, 4],
+            k=[2, 3, 5, 6, 5, 1, 6, 2, 7, 3, 4, 0],
+            color=color,
+            opacity=0.58,
+            flatshading=True,
+            hovertemplate=f"{name}<br>{value_label}<extra></extra>",
+            name=name,
+            showscale=False,
+            showlegend=False,
+        )
+    )
+
+
+def render_activity_3d_map(
+    dwell_matrix: list[list[float]],
+    movement_matrix: list[list[float]],
+    current_matrix: list[list[float]],
+    targets: pd.DataFrame,
+    x_edges: list[int],
+    y_edges: list[int],
+    x_names: list[str],
+    y_names: list[str],
+    zone_aliases: dict[str, str] | None = None,
+    metric_mode: str = "Dwell",
+    target_limit: int = 350,
+) -> None:
+    rows = len(y_names)
+    cols = len(x_names)
+    dwell = coerce_matrix(dwell_matrix, rows, cols)
+    movement = coerce_matrix(movement_matrix, rows, cols)
+    current = coerce_matrix(current_matrix, rows, cols)
+    metric_matrix = movement if metric_mode == "Movement" else dwell
+    max_metric = max([value for row in metric_matrix for value in row] + [0.0])
+
+    fig = go.Figure()
+    label_x: list[float] = []
+    label_y: list[float] = []
+    label_z: list[float] = []
+    label_text: list[str] = []
+
+    for row_idx, row_name in enumerate(y_names):
+        if row_idx + 1 >= len(y_edges):
+            continue
+        for col_idx, col_name in enumerate(x_names):
+            if col_idx + 1 >= len(x_edges):
+                continue
+
+            x0 = float(x_edges[col_idx])
+            x1 = float(x_edges[col_idx + 1])
+            y0 = float(y_edges[row_idx])
+            y1 = float(y_edges[row_idx + 1])
+            value = float(metric_matrix[row_idx][col_idx])
+            height = 20.0 + (360.0 * value / max_metric if max_metric > 0 else 0.0)
+            zone_label = clean_label(f"{row_name} {col_name}").upper()
+            display_zone = zone_display_name(zone_label, zone_aliases)
+            live_count = int(current[row_idx][col_idx])
+            value_label = f"{metric_mode}: {format_minutes(value)}"
+            if live_count:
+                value_label += f"<br>Live now: {live_count}"
+
+            add_zone_prism(
+                fig,
+                x0,
+                x1,
+                y0,
+                y1,
+                height,
+                activity_color(value, max_metric),
+                display_zone,
+                value_label,
+            )
+            label_x.append((x0 + x1) / 2)
+            label_y.append((y0 + y1) / 2)
+            label_z.append(height + 42)
+            label_text.append(f"{display_zone}<br>{format_minutes(value)}")
+
+    fig.add_trace(
+        go.Scatter3d(
+            x=label_x,
+            y=label_y,
+            z=label_z,
+            mode="text",
+            text=label_text,
+            textfont=dict(color="#111827", size=10),
+            hoverinfo="skip",
+            showlegend=False,
+        )
+    )
+
+    fig.add_trace(
+        go.Scatter3d(
+            x=[0],
+            y=[0],
+            z=[0],
+            mode="markers+text",
+            marker=dict(size=7, color="#111827", symbol="diamond"),
+            text=["RADAR"],
+            textposition="bottom center",
+            name="Radar",
+            hovertemplate="Radar position<extra></extra>",
+        )
+    )
+
+    counted_targets = targets[targets["counted"]].copy() if not targets.empty else pd.DataFrame()
+    if not counted_targets.empty:
+        recent = counted_targets.tail(target_limit).copy()
+        recent["x_mm"] = pd.to_numeric(recent["x_mm"], errors="coerce")
+        recent["y_mm"] = pd.to_numeric(recent["y_mm"], errors="coerce")
+        recent = recent.dropna(subset=["x_mm", "y_mm"])
+        recent["display_time"] = recent["captured_at"].dt.strftime("%H:%M:%S")
+        count = max(len(recent) - 1, 1)
+        recent["time_layer"] = [80.0 + (idx / count) * 240.0 for idx in range(len(recent))]
+
+        color_map = {
+            "Approaching": "#0f9f6e",
+            "Engaged stationary": "#2563eb",
+            "Leaving": "#e86e32",
+            "Passerby / out of zone": "#94a3b8",
+        }
+        for behavior, group in recent.groupby("behavior", dropna=False):
+            fig.add_trace(
+                go.Scatter3d(
+                    x=group["x_mm"],
+                    y=group["y_mm"],
+                    z=group["time_layer"],
+                    mode="markers",
+                    marker=dict(
+                        size=5,
+                        color=color_map.get(str(behavior), "#475467"),
+                        opacity=0.72,
+                        line=dict(width=1, color="#ffffff"),
+                    ),
+                    customdata=list(
+                        zip(
+                            group["display_time"].astype(str),
+                            group["zone_label"].map(lambda zone: zone_display_name(zone, zone_aliases)),
+                            group["distance_mm"].astype(str),
+                            group["speed_cms"].astype(str),
+                        )
+                    ),
+                    hovertemplate=(
+                        "%{customdata[0]}<br>%{customdata[1]}<br>"
+                        "X %{x} mm | Y %{y} mm<br>"
+                        "%{customdata[2]} mm | %{customdata[3]} cm/s<extra></extra>"
+                    ),
+                    name=str(behavior),
+                )
+            )
+
+    axis_common = dict(showbackground=False, gridcolor="#d9e0e8", zerolinecolor="#94a3b8", showspikes=False)
+    fig.update_layout(
+        height=650,
+        margin=dict(l=0, r=0, t=28, b=0),
+        paper_bgcolor="#ffffff",
+        scene=dict(
+            xaxis=dict(title="Left / right, mm", **axis_common),
+            yaxis=dict(title="Distance from radar, mm", **axis_common),
+            zaxis=dict(title=f"{metric_mode} layer", range=[0, 520], **axis_common),
+            camera=dict(eye=dict(x=1.35, y=-1.75, z=1.25)),
+            aspectmode="manual",
+            aspectratio=dict(x=1.35, y=1.55, z=0.62),
+        ),
+        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
+    )
+    st.plotly_chart(fig, width="stretch")
+
+
 def explode_hourly_zone_dwell(df: pd.DataFrame, x_names: list[str], y_names: list[str]) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     if df.empty:
@@ -1873,6 +2073,17 @@ for _, record in df.iterrows():
     occupied = [[1 if float(cell or 0) > 0 else 0 for cell in row] for row in (record.get("zone_now") or [])]
     matrix_add(zone_occupied_matrix, occupied, duration_s / 60.0)
 
+zone_movement_values = (
+    target_view[target_view["behavior"].isin(["Approaching", "Leaving"])]
+    .groupby("zone_label")["duration_s"]
+    .sum()
+    .div(60)
+    .to_dict()
+    if not target_view.empty
+    else {}
+)
+zone_movement_matrix = zone_value_matrix(zone_movement_values, x_names, y_names)
+
 concentration_buckets, crowd_pressure_matrix, concentration_table = crowd_concentration(df, x_names, y_names)
 _, _, previous_concentration_table = (
     crowd_concentration(previous_df, x_names, y_names)
@@ -1912,6 +2123,7 @@ top_zone_label = zone_display_name(clean_label(top_zone).upper(), zone_aliases)
 
 view_options = [
     "Owner Brief",
+    "3D Activity Map",
     "Heatmap",
     "Crowd Concentration",
     "Service Coverage",
@@ -2069,6 +2281,62 @@ if active_view == "Owner Brief":
             width="stretch",
             hide_index=True,
         )
+
+elif active_view == "3D Activity Map":
+    render_heatmap_banner(
+        "3D Activity Map",
+        "A pseudo-3D radar view: X/Y are real floor position, height shows activity intensity rather than physical height.",
+    )
+
+    map_cols = st.columns([1, 1, 1, 1])
+    with map_cols[0]:
+        metric_mode = st.selectbox("Height shows", ["Dwell", "Movement"], index=0)
+    with map_cols[1]:
+        target_limit = st.slider("Target trail points", min_value=50, max_value=1000, value=350, step=50)
+    with map_cols[2]:
+        total_dwell = sum(sum(row) for row in zone_dwell_matrix)
+        callout_card("Dwell Layer", format_minutes(float(total_dwell)), "Total zone attention")
+    with map_cols[3]:
+        total_movement = sum(sum(row) for row in zone_movement_matrix)
+        callout_card("Motion Layer", format_minutes(float(total_movement)), "Approach + leaving movement")
+
+    selected_matrix = zone_movement_matrix if metric_mode == "Movement" else zone_dwell_matrix
+    selected_values = [
+        {
+            "zone": zone_display_name(clean_label(f"{row_name} {col_name}").upper(), zone_aliases),
+            "value": float(selected_matrix[row_idx][col_idx]),
+        }
+        for row_idx, row_name in enumerate(y_names)
+        for col_idx, col_name in enumerate(x_names)
+    ]
+    top_3d_zone = max(selected_values, key=lambda item: item["value"]) if selected_values else {"zone": "None", "value": 0.0}
+
+    insight_cols = st.columns(3)
+    with insight_cols[0]:
+        callout_card("Tallest Zone", str(top_3d_zone["zone"]), f"{format_minutes(float(top_3d_zone['value']))} {metric_mode.lower()}")
+    with insight_cols[1]:
+        callout_card("Live Targets", str(last_people_now) if is_live else "--", active_zone_text if is_live else "Feed is stale")
+    with insight_cols[2]:
+        callout_card("3D Meaning", "Activity height", "LD2450 does not measure physical height or shelves")
+
+    render_activity_3d_map(
+        zone_dwell_matrix,
+        zone_movement_matrix,
+        current_heatmap_matrix,
+        target_view,
+        x_edges,
+        y_edges,
+        x_names,
+        y_names,
+        zone_aliases=zone_aliases,
+        metric_mode=metric_mode,
+        target_limit=target_limit,
+    )
+
+    st.info(
+        "This is not a LiDAR-style room scan. The radar provides person targets on an X/Y floor plane, so the vertical axis is an activity layer. "
+        "For real 3D shelves, walls, or body height, you would need a depth camera, LiDAR, or a point-cloud mmWave sensor."
+    )
 
 elif active_view == "Heatmap":
     render_heatmap_banner(
