@@ -1487,6 +1487,7 @@ def render_room_photo_overlay(
     current_targets: pd.DataFrame,
     zone_aliases: dict[str, str] | None = None,
     trail_limit: int = 250,
+    highlight_time: pd.Timestamp | None = None,
 ) -> None:
     uri = image_data_uri(str(ROOM_IMAGE_PATH))
     if not uri:
@@ -1587,6 +1588,32 @@ def render_room_photo_overlay(
                         name=str(behavior),
                     )
                 )
+
+            if highlight_time is not None:
+                current = recent[recent["captured_at"] == highlight_time].copy()
+                if not current.empty:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=current["photo_x"],
+                            y=current["photo_y"],
+                            mode="markers",
+                            marker=dict(
+                                size=19,
+                                color="rgba(255,255,255,.05)",
+                                line=dict(width=4, color="#111827"),
+                                symbol="circle",
+                            ),
+                            customdata=list(
+                                zip(
+                                    current["zone_label"].map(lambda zone: zone_display_name(zone, zone_aliases)),
+                                    current["distance_mm"].astype(str),
+                                    current["motion"].astype(str),
+                                )
+                            ),
+                            hovertemplate="Replay point<br>%{customdata[0]}<br>%{customdata[1]} mm | %{customdata[2]}<extra></extra>",
+                            name="Replay moment",
+                        )
+                    )
 
     fig.update_layout(
         height=680,
@@ -2306,6 +2333,7 @@ top_zone_label = zone_display_name(clean_label(top_zone).upper(), zone_aliases)
 view_options = [
     "Owner Brief",
     "Room Layout",
+    "Time Replay",
     "3D Activity Map",
     "Heatmap",
     "Crowd Concentration",
@@ -2492,6 +2520,175 @@ elif active_view == "Room Layout":
         callout_card("Accuracy", "Approximate", "A single photo has perspective distortion; target overlay is calibrated from the visible dimensions")
     with note_cols[2]:
         callout_card("Next Improvement", "Mount point", "If you mark exact radar position and height, the projection can be tuned tighter")
+
+elif active_view == "Time Replay":
+    render_heatmap_banner(
+        "Historic Location Replay",
+        "Scrub or auto-play through the loaded history to see how people and room zones changed over time.",
+    )
+
+    replay_len = len(df)
+    if "replay_index" not in st.session_state:
+        st.session_state["replay_index"] = 0
+    st.session_state["replay_index"] = int(min(max(st.session_state["replay_index"], 0), max(replay_len - 1, 0)))
+
+    control_cols = st.columns([1, 1, 1, 1, 1])
+    with control_cols[0]:
+        autoplay = st.checkbox("Auto play", value=False, key="replay_autoplay")
+    with control_cols[1]:
+        loop_replay = st.checkbox("Loop", value=True, key="replay_loop")
+    with control_cols[2]:
+        playback_speed_ms = st.select_slider("Speed", options=[250, 500, 1000, 1500, 2500, 5000], value=1000, format_func=lambda value: f"{value} ms")
+    with control_cols[3]:
+        step_size = st.select_slider("Frame step", options=[1, 2, 5, 10, 20], value=1)
+    with control_cols[4]:
+        trail_minutes = st.slider("Trail minutes", min_value=1, max_value=max(5, min(hours * 60, 120)), value=min(10, max(1, hours * 60)), step=1)
+
+    jump_cols = st.columns([1, 1, 4])
+    with jump_cols[0]:
+        if st.button("Start replay"):
+            st.session_state["replay_index"] = 0
+            st.rerun()
+    with jump_cols[1]:
+        if st.button("Latest"):
+            st.session_state["replay_index"] = replay_len - 1
+            st.rerun()
+
+    if autoplay and replay_len > 1:
+        tick = st_autorefresh(interval=int(playback_speed_ms), key="replay_autoplay_tick")
+        last_tick = st.session_state.get("replay_last_tick")
+        if tick != last_tick:
+            next_index = st.session_state["replay_index"] + int(step_size)
+            if next_index >= replay_len:
+                next_index = 0 if loop_replay else replay_len - 1
+            st.session_state["replay_index"] = next_index
+            st.session_state["replay_last_tick"] = tick
+
+    replay_index = st.slider(
+        "Replay position",
+        min_value=0,
+        max_value=max(replay_len - 1, 0),
+        value=int(st.session_state["replay_index"]),
+        help="0 is the first snapshot in the selected analysis window.",
+    )
+    if replay_index != st.session_state["replay_index"]:
+        st.session_state["replay_index"] = replay_index
+        st.rerun()
+
+    replay_index = int(st.session_state["replay_index"])
+    replay_record = df.iloc[replay_index]
+    replay_time = replay_record["captured_at"]
+    replay_age = replay_time - df.iloc[0]["captured_at"]
+    replay_until = df[df["captured_at"] <= replay_time].copy()
+    replay_zone_now = coerce_matrix(replay_record.get("zone_now") or [], len(y_names), len(x_names))
+    replay_current_targets = current_target_points(replay_record, True, x_edges, y_edges)
+    trail_start = replay_time - timedelta(minutes=int(trail_minutes))
+    if target_view.empty or "captured_at" not in target_view.columns:
+        replay_trail = pd.DataFrame()
+    else:
+        replay_trail = target_view[
+            (target_view["captured_at"] >= trail_start)
+            & (target_view["captured_at"] <= replay_time)
+        ].copy()
+    if replay_trail.empty or "captured_at" not in replay_trail.columns:
+        replay_current_observations = pd.DataFrame()
+    else:
+        replay_current_observations = replay_trail[replay_trail["captured_at"] == replay_time].copy()
+
+    active_replay_zones = current_zone_labels(replay_zone_now, x_names, y_names, zone_aliases)
+    replay_people = int(replay_record.get("people_now") or 0)
+    replay_target_count = int(replay_current_observations["counted"].sum()) if not replay_current_observations.empty else 0
+    replay_motion = (
+        top_value(replay_current_observations["behavior"], "No target")
+        if not replay_current_observations.empty
+        else "No target"
+    )
+
+    replay_cols = st.columns(5)
+    with replay_cols[0]:
+        callout_card("Replay Time", replay_time.strftime("%b %d, %H:%M:%S"), f"+{format_seconds(replay_age.total_seconds())} from start")
+    with replay_cols[1]:
+        callout_card("People Then", str(replay_people), "Snapshot occupancy")
+    with replay_cols[2]:
+        callout_card("Active Zone", ", ".join(active_replay_zones[:2]) if active_replay_zones else "Clear", "At selected moment")
+    with replay_cols[3]:
+        callout_card("Current Points", str(replay_target_count), "Targets at selected moment")
+    with replay_cols[4]:
+        callout_card("Motion State", replay_motion, "Dominant behavior then")
+
+    view_mode = st.radio("Replay view", ["Room photo", "Radar floor", "Both"], horizontal=True)
+
+    timeline = df[["captured_at", "people_now"]].copy()
+    fig = px.area(timeline, x="captured_at", y="people_now", title="Occupancy Timeline With Replay Cursor")
+    fig.update_traces(line_color="#0f9f6e", fillcolor="rgba(15,159,110,.18)")
+    fig.add_vline(x=replay_time, line_color="#c2410c", line_width=2)
+    fig.update_layout(
+        height=260,
+        margin=dict(l=10, r=10, t=52, b=10),
+        paper_bgcolor="#ffffff",
+        plot_bgcolor="#ffffff",
+        font_color="#111827",
+        xaxis_title="Time",
+        yaxis_title="People",
+    )
+    st.plotly_chart(fig, width="stretch")
+
+    if view_mode in ["Room photo", "Both"]:
+        render_room_photo_overlay(
+            replay_trail,
+            replay_current_targets,
+            zone_aliases=zone_aliases,
+            trail_limit=1000,
+            highlight_time=replay_time,
+        )
+
+    if view_mode in ["Radar floor", "Both"]:
+        render_retail_floor_heatmap(
+            replay_zone_now,
+            replay_zone_now,
+            replay_current_targets,
+            x_names,
+            y_names,
+            "Radar Zones at Replay Moment",
+            True,
+            unit="people",
+            metric_label="People",
+        )
+        render_floor_map(replay_trail, x_edges, y_edges, x_names, y_names, color_by="behavior")
+
+    st.subheader("Replay Data Points")
+    if replay_current_observations.empty:
+        st.write("No counted target observations at this replay moment.")
+    else:
+        display_replay = replay_current_observations.copy()
+        display_replay["Store location"] = display_replay["zone_label"].map(lambda zone: zone_display_name(zone, zone_aliases))
+        replay_columns = [
+            "captured_at",
+            "target_slot",
+            "Store location",
+            "behavior",
+            "motion",
+            "x_mm",
+            "y_mm",
+            "distance_mm",
+            "speed_cms",
+        ]
+        st.dataframe(
+            display_replay[[column for column in replay_columns if column in display_replay.columns]].rename(
+                columns={
+                    "captured_at": "Time",
+                    "target_slot": "Target",
+                    "behavior": "Behavior",
+                    "motion": "Motion",
+                    "x_mm": "X mm",
+                    "y_mm": "Y mm",
+                    "distance_mm": "Distance mm",
+                    "speed_cms": "Speed cm/s",
+                }
+            ),
+            width="stretch",
+            hide_index=True,
+        )
 
 elif active_view == "3D Activity Map":
     render_heatmap_banner(
