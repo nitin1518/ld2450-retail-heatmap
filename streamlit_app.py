@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 from datetime import datetime, timedelta, timezone
 from html import escape
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -401,6 +403,12 @@ SUPABASE_SERVICE_ROLE_KEY = secret("SUPABASE_SERVICE_ROLE_KEY")
 DASHBOARD_PASSWORD = secret("DASHBOARD_PASSWORD")
 SETTINGS_TABLE = "dashboard_settings"
 ZONE_LABELS_KEY = "zone_labels"
+APP_DIR = Path(__file__).parent
+ROOM_IMAGE_PATH = APP_DIR / "assets" / "home_environment.jpg"
+ROOM_IMAGE_WIDTH = 1800
+ROOM_IMAGE_HEIGHT = 1368
+ROOM_WIDTH_MM = 4200
+ROOM_DEPTH_MM = 4500
 SNAPSHOT_COLUMNS = ",".join(
     [
         "captured_at",
@@ -1049,6 +1057,32 @@ def display_zone_list(zone_labels: list[str], zone_aliases: dict[str, str] | Non
     return ", ".join(zone_display_name(zone, zone_aliases) for zone in zone_labels)
 
 
+def bedroom_zone_preset(zone_options: list[str]) -> dict[str, str]:
+    preset = {
+        "FRONT FAR LEFT": "Left Sofa Front",
+        "FRONT LEFT": "Left Sofa Front",
+        "FRONT CENTER": "Walkway Front",
+        "FRONT RIGHT": "Right Sofa Front",
+        "FRONT FAR RIGHT": "Right Sofa Front",
+        "NEAR FAR LEFT": "Left Sofa",
+        "NEAR LEFT": "Left Sofa",
+        "NEAR CENTER": "Bed Foot",
+        "NEAR RIGHT": "Right Sofa",
+        "NEAR FAR RIGHT": "Right Sofa",
+        "MID FAR LEFT": "Wardrobe",
+        "MID LEFT": "Wardrobe / Left Aisle",
+        "MID CENTER": "Bed",
+        "MID RIGHT": "Right Aisle",
+        "MID FAR RIGHT": "Curtains",
+        "FAR FAR LEFT": "Wardrobe Back",
+        "FAR LEFT": "Back Wall Left",
+        "FAR CENTER": "Bed Head",
+        "FAR RIGHT": "Back Wall Right",
+        "FAR FAR RIGHT": "Curtains Back",
+    }
+    return {zone: preset[zone] for zone in zone_options if zone in preset}
+
+
 def default_counter_zones(targets: pd.DataFrame, zone_options: list[str]) -> list[str]:
     if targets.empty or not zone_options:
         return zone_options[:1]
@@ -1416,6 +1450,154 @@ def previous_zone_dwell(previous_zone_table: pd.DataFrame, zone_label: str) -> f
         for _, row in previous_zone_table.iterrows()
     }
     return float(lookup.get(zone_label, 0.0))
+
+
+@st.cache_data
+def image_data_uri(path_text: str) -> str:
+    path = Path(path_text)
+    if not path.exists():
+        return ""
+    mime = "image/jpeg" if path.suffix.lower() in {".jpg", ".jpeg"} else "image/png"
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
+
+
+def radar_to_photo_xy(x_mm: float, y_mm: float) -> tuple[float, float]:
+    y_clamped = min(max(float(y_mm), 0.0), float(ROOM_DEPTH_MM))
+    depth_ratio = y_clamped / float(ROOM_DEPTH_MM)
+    image_y = 1305.0 - depth_ratio * 575.0
+    half_width = 805.0 - depth_ratio * 425.0
+    image_x = ROOM_IMAGE_WIDTH / 2 + (float(x_mm) / (ROOM_WIDTH_MM / 2)) * half_width
+    return image_x, image_y
+
+
+def room_landmarks() -> list[dict[str, Any]]:
+    return [
+        {"name": "Wardrobe", "x0": 0, "y0": 470, "x1": 470, "y1": 1085, "color": "#4b2e1f"},
+        {"name": "Left sofa", "x0": 0, "y0": 870, "x1": 790, "y1": 1360, "color": "#d99118"},
+        {"name": "Bed", "x0": 710, "y0": 770, "x1": 1190, "y1": 1190, "color": "#e7d4c9"},
+        {"name": "Right sofa", "x0": 1190, "y0": 850, "x1": 1800, "y1": 1340, "color": "#d6b69a"},
+        {"name": "Walkway", "x0": 730, "y0": 1110, "x1": 1220, "y1": 1360, "color": "#d9e0e8"},
+        {"name": "Back wall", "x0": 590, "y0": 445, "x1": 1515, "y1": 770, "color": "#d8cdc0"},
+    ]
+
+
+def render_room_photo_overlay(
+    targets: pd.DataFrame,
+    current_targets: pd.DataFrame,
+    zone_aliases: dict[str, str] | None = None,
+    trail_limit: int = 250,
+) -> None:
+    uri = image_data_uri(str(ROOM_IMAGE_PATH))
+    if not uri:
+        st.info("Room photo asset is missing from the deployed app.")
+        return
+
+    fig = go.Figure()
+    fig.add_layout_image(
+        dict(
+            source=uri,
+            xref="x",
+            yref="y",
+            x=0,
+            y=0,
+            sizex=ROOM_IMAGE_WIDTH,
+            sizey=ROOM_IMAGE_HEIGHT,
+            sizing="stretch",
+            layer="below",
+        )
+    )
+
+    for landmark in room_landmarks():
+        fig.add_shape(
+            type="rect",
+            x0=landmark["x0"],
+            y0=landmark["y0"],
+            x1=landmark["x1"],
+            y1=landmark["y1"],
+            line=dict(color=landmark["color"], width=2),
+            fillcolor=landmark["color"],
+            opacity=0.18,
+        )
+        fig.add_annotation(
+            x=(landmark["x0"] + landmark["x1"]) / 2,
+            y=(landmark["y0"] + landmark["y1"]) / 2,
+            text=landmark["name"],
+            showarrow=False,
+            font=dict(size=13, color="#111827"),
+            bgcolor="rgba(255,255,255,.72)",
+            bordercolor="rgba(17,24,39,.15)",
+            borderwidth=1,
+        )
+
+    fig.add_trace(
+        go.Scatter(
+            x=[ROOM_IMAGE_WIDTH / 2],
+            y=[1308],
+            mode="markers+text",
+            marker=dict(size=13, color="#111827", symbol="diamond"),
+            text=["Radar eye"],
+            textposition="top center",
+            name="Radar",
+            hovertemplate="Radar/camera eye position<extra></extra>",
+        )
+    )
+
+    counted = targets[targets["counted"]].copy() if not targets.empty else pd.DataFrame()
+    if not counted.empty:
+        recent = counted.tail(trail_limit).copy()
+        recent["x_mm"] = pd.to_numeric(recent["x_mm"], errors="coerce")
+        recent["y_mm"] = pd.to_numeric(recent["y_mm"], errors="coerce")
+        recent = recent.dropna(subset=["x_mm", "y_mm"])
+        if not recent.empty:
+            projected = recent.apply(lambda row: radar_to_photo_xy(row["x_mm"], row["y_mm"]), axis=1)
+            recent["photo_x"] = [point[0] for point in projected]
+            recent["photo_y"] = [point[1] for point in projected]
+            recent["display_time"] = recent["captured_at"].dt.strftime("%H:%M:%S")
+            color_map = {
+                "Approaching": "#0f9f6e",
+                "Engaged stationary": "#2563eb",
+                "Leaving": "#e86e32",
+                "Passerby / out of zone": "#94a3b8",
+            }
+            for behavior, group in recent.groupby("behavior", dropna=False):
+                fig.add_trace(
+                    go.Scatter(
+                        x=group["photo_x"],
+                        y=group["photo_y"],
+                        mode="markers",
+                        marker=dict(
+                            size=9,
+                            color=color_map.get(str(behavior), "#475467"),
+                            opacity=0.76,
+                            line=dict(width=1, color="#ffffff"),
+                        ),
+                        customdata=list(
+                            zip(
+                                group["display_time"].astype(str),
+                                group["zone_label"].map(lambda zone: zone_display_name(zone, zone_aliases)),
+                                group["distance_mm"].astype(str),
+                                group["speed_cms"].astype(str),
+                            )
+                        ),
+                        hovertemplate=(
+                            "%{customdata[0]}<br>%{customdata[1]}<br>"
+                            "%{customdata[2]} mm | %{customdata[3]} cm/s<extra></extra>"
+                        ),
+                        name=str(behavior),
+                    )
+                )
+
+    fig.update_layout(
+        height=680,
+        margin=dict(l=0, r=0, t=20, b=0),
+        paper_bgcolor="#ffffff",
+        plot_bgcolor="#ffffff",
+        xaxis=dict(range=[0, ROOM_IMAGE_WIDTH], visible=False),
+        yaxis=dict(range=[ROOM_IMAGE_HEIGHT, 0], visible=False, scaleanchor="x", scaleratio=1),
+        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
+    )
+    st.plotly_chart(fig, width="stretch")
 
 
 def render_heatmap_banner(title: str, subtitle: str) -> None:
@@ -2123,6 +2305,7 @@ top_zone_label = zone_display_name(clean_label(top_zone).upper(), zone_aliases)
 
 view_options = [
     "Owner Brief",
+    "Room Layout",
     "3D Activity Map",
     "Heatmap",
     "Crowd Concentration",
@@ -2281,6 +2464,34 @@ if active_view == "Owner Brief":
             width="stretch",
             hide_index=True,
         )
+
+elif active_view == "Room Layout":
+    render_heatmap_banner(
+        "Room Layout Overlay",
+        "Uses the supplied camera-eye photo and room dimensions to make radar detections easier to understand.",
+    )
+
+    layout_cols = st.columns(4)
+    with layout_cols[0]:
+        callout_card("Room Width", f"{ROOM_WIDTH_MM / 1000:.1f}m", "Back-wall reference from photo")
+    with layout_cols[1]:
+        callout_card("Room Depth", f"{ROOM_DEPTH_MM / 1000:.1f}m", "Radar-facing depth estimate")
+    with layout_cols[2]:
+        callout_card("Bed", "1.44m x 1.94m", "Measured bed footprint")
+    with layout_cols[3]:
+        callout_card("Seating", "2.83m / 1.73m", "Left and right sofa lengths")
+
+    trail_limit = st.slider("Photo overlay trail points", min_value=50, max_value=1000, value=300, step=50)
+    render_room_photo_overlay(target_view, current_targets, zone_aliases=zone_aliases, trail_limit=trail_limit)
+
+    st.subheader("Photo Calibration Notes")
+    note_cols = st.columns(3)
+    with note_cols[0]:
+        callout_card("Best Used For", "Context", "Shows where radar detections sit relative to bed, sofas, wardrobe, and walkway")
+    with note_cols[1]:
+        callout_card("Accuracy", "Approximate", "A single photo has perspective distortion; target overlay is calibrated from the visible dimensions")
+    with note_cols[2]:
+        callout_card("Next Improvement", "Mount point", "If you mark exact radar position and height, the projection can be tuned tighter")
 
 elif active_view == "3D Activity Map":
     render_heatmap_banner(
@@ -3268,6 +3479,25 @@ elif active_view == "Setup":
             "Zone names will work in this session immediately. To persist them across devices and redeploys, "
             "run the updated supabase_schema.sql once in Supabase SQL Editor."
         )
+
+    preset_aliases = bedroom_zone_preset(zone_options)
+    if preset_aliases:
+        preset_col, note_col = st.columns([1, 2])
+        with preset_col:
+            apply_preset = st.button("Apply bedroom preset")
+        with note_col:
+            st.caption("Uses the supplied photo: bed, sofas, wardrobe, curtains, walkway, and back wall.")
+
+        if apply_preset:
+            merged_aliases = {**zone_aliases, **preset_aliases}
+            st.session_state["zone_aliases"] = merged_aliases
+            ok, message = save_dashboard_setting(ZONE_LABELS_KEY, merged_aliases)
+            if ok:
+                st.success("Bedroom zone names saved to Supabase.")
+            else:
+                st.warning("Bedroom names are active for this session, but could not be saved yet.")
+                st.caption(message)
+            st.rerun()
 
     st.subheader("Store Location Names")
     with st.form("zone_name_setup"):
