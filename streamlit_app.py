@@ -756,6 +756,58 @@ def current_target_points(latest: pd.Series, is_live: bool, x_edges: list[int], 
     return pd.DataFrame(rows)
 
 
+def enrich_targets(targets: pd.DataFrame) -> pd.DataFrame:
+    if targets.empty:
+        return targets.copy()
+
+    result = targets.copy()
+    result["distance_mm"] = pd.to_numeric(result["distance_mm"], errors="coerce").fillna(0)
+    result["speed_cms"] = pd.to_numeric(result["speed_cms"], errors="coerce").fillna(0)
+    result["duration_s"] = pd.to_numeric(result["duration_s"], errors="coerce").fillna(0)
+    result["counted"] = result["counted"].fillna(False).astype(bool)
+    result["motion"] = result["motion"].fillna("UNKNOWN")
+    result["zone_label"] = result["zone"].fillna("OUT_OF_ZONE").map(lambda value: clean_label(value).upper())
+    result["target_label"] = result["target_slot"].fillna(0).astype(int).map(lambda value: f"Slot {value}")
+    result["distance_band"] = pd.cut(
+        result["distance_mm"],
+        bins=[0, 1000, 2200, 3800, 6000, float("inf")],
+        labels=["Front 0-1m", "Near 1-2.2m", "Mid 2.2-3.8m", "Far 3.8-6m", "Out of range"],
+        include_lowest=True,
+    ).astype(str)
+
+    def behavior(row: pd.Series) -> str:
+        if not bool(row["counted"]):
+            return "Passerby / out of zone"
+        if row["motion"] == "APPROACHING":
+            return "Approaching"
+        if row["motion"] == "MOVING_AWAY":
+            return "Leaving"
+        if row["motion"] == "STATIONARY":
+            return "Engaged stationary"
+        return clean_label(row["motion"]).title()
+
+    result["behavior"] = result.apply(behavior, axis=1)
+    return result
+
+
+def top_value(series: pd.Series, fallback: str = "None") -> str:
+    values = series.dropna()
+    if values.empty:
+        return fallback
+    counts = values.value_counts()
+    if counts.empty:
+        return fallback
+    return str(counts.index[0])
+
+
+def apply_selection_filter(frame: pd.DataFrame, column: str, selected: list[str], options: list[str]) -> pd.DataFrame:
+    if frame.empty or not options:
+        return frame
+    if not selected:
+        return frame.iloc[0:0].copy()
+    return frame[frame[column].isin(selected)].copy()
+
+
 def render_heatmap_banner(title: str, subtitle: str) -> None:
     st.markdown(
         f"""
@@ -919,7 +971,7 @@ def render_retail_floor_heatmap(
         tickvals=[row_idx + 0.5 for row_idx in range(rows)],
         ticktext=[clean_label(name).upper() for name in y_names],
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def render_heatmap(matrix: list[list[float]], x_names: list[str], y_names: list[str], title: str, unit: str) -> None:
@@ -954,11 +1006,37 @@ def render_heatmap(matrix: list[list[float]], x_names: list[str], y_names: list[
         font_color="#111827",
         xaxis=dict(side="top"),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
-def render_floor_map(targets: pd.DataFrame, x_edges: list[int], y_edges: list[int], x_names: list[str], y_names: list[str]) -> None:
+def render_floor_map(
+    targets: pd.DataFrame,
+    x_edges: list[int],
+    y_edges: list[int],
+    x_names: list[str],
+    y_names: list[str],
+    color_by: str = "behavior",
+) -> None:
     fig = go.Figure()
+    palette = [
+        "#0f9f6e",
+        "#2563eb",
+        "#e86e32",
+        "#7c3aed",
+        "#b7791f",
+        "#c2410c",
+        "#0891b2",
+        "#475467",
+    ]
+    fixed_colors = {
+        "Approaching": "#0f9f6e",
+        "Engaged stationary": "#2563eb",
+        "Leaving": "#e86e32",
+        "Passerby / out of zone": "#94a3b8",
+        "STATIONARY": "#2563eb",
+        "APPROACHING": "#0f9f6e",
+        "MOVING_AWAY": "#e86e32",
+    }
 
     for row_idx, row_name in enumerate(y_names):
         if row_idx + 1 >= len(y_edges):
@@ -986,27 +1064,34 @@ def render_floor_map(targets: pd.DataFrame, x_edges: list[int], y_edges: list[in
     if not targets.empty:
         recent = targets.tail(500).copy()
         recent["display_time"] = recent["captured_at"].dt.strftime("%H:%M:%S")
-        fig.add_trace(
-            go.Scatter(
-                x=recent["x_mm"],
-                y=recent["y_mm"],
-                mode="markers",
-                marker=dict(
-                    size=recent["counted"].map({True: 11, False: 7}),
-                    color=recent["counted"].map({True: "#0f9f6e", False: "#c2410c"}),
-                    opacity=0.72,
-                    line=dict(width=1, color="#ffffff"),
-                ),
-                text=recent["zone"],
-                customdata=recent[["display_time", "distance_mm", "motion", "speed_cms"]],
-                hovertemplate=(
-                    "%{text}<br>X %{x} mm | Y %{y} mm<br>"
-                    "%{customdata[0]} | %{customdata[1]} mm<br>"
-                    "%{customdata[2]} | %{customdata[3]} cm/s<extra></extra>"
-                ),
-                name="Target observations",
+        if color_by not in recent.columns:
+            color_by = "motion" if "motion" in recent.columns else "counted"
+        recent[color_by] = recent[color_by].fillna("Unknown").astype(str)
+
+        for idx, (label, group) in enumerate(recent.groupby(color_by, dropna=False)):
+            color = fixed_colors.get(str(label), palette[idx % len(palette)])
+            fig.add_trace(
+                go.Scatter(
+                    x=group["x_mm"],
+                    y=group["y_mm"],
+                    mode="markers",
+                    marker=dict(
+                        size=group["counted"].map({True: 12, False: 7}),
+                        color=color,
+                        opacity=0.76,
+                        line=dict(width=1, color="#ffffff"),
+                    ),
+                    text=group["zone"],
+                    customdata=group[["display_time", "distance_mm", "motion", "speed_cms", color_by]],
+                    hovertemplate=(
+                        "%{text}<br>X %{x} mm | Y %{y} mm<br>"
+                        "%{customdata[0]} | %{customdata[1]} mm<br>"
+                        "%{customdata[2]} | %{customdata[3]} cm/s<br>"
+                        f"{clean_label(color_by).title()}: " + "%{customdata[4]}<extra></extra>"
+                    ),
+                    name=str(label),
+                )
             )
-        )
 
     fig.add_shape(type="line", x0=0, x1=0, y0=min(y_edges), y1=max(y_edges), line=dict(color="#94a3b8", width=1, dash="dot"))
     fig.update_layout(
@@ -1018,10 +1103,11 @@ def render_floor_map(targets: pd.DataFrame, x_edges: list[int], y_edges: list[in
         font_color="#111827",
         xaxis_title="Left / right position, mm",
         yaxis_title="Distance from sensor, mm",
-        showlegend=False,
+        legend_title=clean_label(color_by).title(),
+        showlegend=True,
     )
     fig.update_yaxes(range=[max(y_edges), min(y_edges)], autorange=False)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def explode_hourly_zone_dwell(df: pd.DataFrame, x_names: list[str], y_names: list[str]) -> pd.DataFrame:
@@ -1140,6 +1226,7 @@ summary = summarize_period(df)
 previous_summary = summarize_period(previous_df)
 latest = df.iloc[-1]
 targets = target_observations(df)
+target_view = enrich_targets(targets)
 zone_table = zone_summary(df, x_names, y_names)
 visits_by_zone = zone_visit_counts(df, x_names, y_names)
 zone_table["estimated_visits"] = zone_table["zone"].map(visits_by_zone).fillna(0).astype(int)
@@ -1251,7 +1338,7 @@ if active_view == "Heatmap":
                     "estimated_visits": "Visits",
                 }
             ).round(2),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -1321,7 +1408,7 @@ elif active_view == "Crowd Concentration":
             "dominant_pattern": "Dominant pattern",
         }
     )
-    st.dataframe(display_concentration.round(2), use_container_width=True, hide_index=True)
+    st.dataframe(display_concentration.round(2), width="stretch", hide_index=True)
 
 elif active_view == "Executive View":
     left, right = st.columns([1.25, 1])
@@ -1338,7 +1425,7 @@ elif active_view == "Executive View":
             xaxis_title="Time",
             yaxis_title="People",
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     with right:
         ranked = zone_table.head(8).copy()
@@ -1361,7 +1448,7 @@ elif active_view == "Executive View":
             yaxis_title="",
             coloraxis_showscale=False,
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     st.subheader("Retail Readout")
     readout_cols = st.columns(4)
@@ -1418,7 +1505,7 @@ elif active_view == "Zones":
             "activity_heat": "Activity heat",
         }
     )
-    st.dataframe(display_zone_table.round(2), use_container_width=True, hide_index=True)
+    st.dataframe(display_zone_table.round(2), width="stretch", hide_index=True)
     st.download_button(
         "Download zone performance CSV",
         data=display_zone_table.to_csv(index=False).encode("utf-8"),
@@ -1441,7 +1528,7 @@ elif active_view == "Dwell":
                 xaxis_title="Time",
                 yaxis_title="Person-minutes",
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
         else:
             st.info("Not enough data for dwell trend yet.")
 
@@ -1460,7 +1547,7 @@ elif active_view == "Dwell":
                 xaxis_title="Dwell minutes",
                 yaxis_title="Sessions",
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
         else:
             st.info("No occupied sessions in this window.")
 
@@ -1473,7 +1560,7 @@ elif active_view == "Dwell":
         recent_sessions["person_minutes"] = recent_sessions["person_seconds"] / 60
         st.dataframe(
             recent_sessions[["start", "end", "peak_people", "dwell", "person_minutes"]].sort_values("start", ascending=False),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -1527,7 +1614,7 @@ elif active_view == "Campaign Impact":
                     "dwell_lift_pct": "Dwell lift %",
                 }
             ).round(2),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
     else:
@@ -1543,8 +1630,62 @@ elif active_view == "Targets":
         else ("Clear" if is_live else "Offline")
     )
     avg_current_distance = float(counted_latest["Distance mm"].mean()) if not counted_latest.empty else 0.0
-    recent_target_limit = st.slider("Recent target trail", min_value=50, max_value=1000, value=300, step=50)
-    recent_targets = targets.tail(recent_target_limit).copy() if not targets.empty else pd.DataFrame()
+
+    st.subheader("Target Lens")
+    control_cols = st.columns([1.1, 1.1, 1, 1])
+    with control_cols[0]:
+        recent_target_limit = st.slider("Recent target trail", min_value=50, max_value=1000, value=300, step=50)
+    recent_targets = target_view.tail(recent_target_limit).copy() if not target_view.empty else pd.DataFrame()
+
+    with control_cols[1]:
+        color_mode = st.selectbox(
+            "Color by",
+            ["Behavior", "Motion", "Zone", "Distance band", "Target slot"],
+            index=0,
+        )
+    color_column = {
+        "Behavior": "behavior",
+        "Motion": "motion",
+        "Zone": "zone_label",
+        "Distance band": "distance_band",
+        "Target slot": "target_label",
+    }[color_mode]
+
+    filtered_targets = recent_targets.copy()
+    with control_cols[2]:
+        counted_only = st.checkbox("Counted only", value=True)
+    if counted_only and not filtered_targets.empty:
+        filtered_targets = filtered_targets[filtered_targets["counted"]].copy()
+
+    with control_cols[3]:
+        behavior_options = sorted(filtered_targets["behavior"].dropna().unique().tolist()) if not filtered_targets.empty else []
+        selected_behaviors = st.multiselect("Behavior", behavior_options, default=behavior_options)
+    filtered_targets = apply_selection_filter(filtered_targets, "behavior", selected_behaviors, behavior_options)
+
+    filter_cols = st.columns(3)
+    with filter_cols[0]:
+        motion_options = sorted(filtered_targets["motion"].dropna().unique().tolist()) if not filtered_targets.empty else []
+        selected_motions = st.multiselect("Motion", motion_options, default=motion_options)
+    filtered_targets = apply_selection_filter(filtered_targets, "motion", selected_motions, motion_options)
+
+    with filter_cols[1]:
+        zone_options = sorted(filtered_targets["zone_label"].dropna().unique().tolist()) if not filtered_targets.empty else []
+        selected_zones = st.multiselect("Zone", zone_options, default=zone_options)
+    filtered_targets = apply_selection_filter(filtered_targets, "zone_label", selected_zones, zone_options)
+
+    with filter_cols[2]:
+        band_options = sorted(filtered_targets["distance_band"].dropna().unique().tolist()) if not filtered_targets.empty else []
+        selected_bands = st.multiselect("Distance band", band_options, default=band_options)
+    filtered_targets = apply_selection_filter(filtered_targets, "distance_band", selected_bands, band_options)
+
+    approach_count = int((filtered_targets["behavior"] == "Approaching").sum()) if not filtered_targets.empty else 0
+    leaving_count = int((filtered_targets["behavior"] == "Leaving").sum()) if not filtered_targets.empty else 0
+    stationary_minutes = (
+        float(filtered_targets.loc[filtered_targets["behavior"] == "Engaged stationary", "duration_s"].sum()) / 60.0
+        if not filtered_targets.empty
+        else 0.0
+    )
+    dominant_behavior = top_value(filtered_targets["behavior"], "None") if not filtered_targets.empty else "None"
 
     target_cols = st.columns(4)
     with target_cols[0]:
@@ -1552,23 +1693,42 @@ elif active_view == "Targets":
     with target_cols[1]:
         callout_card("Current Zones", current_target_zones, "Where the latest target slots are located")
     with target_cols[2]:
-        callout_card("Avg Distance", f"{avg_current_distance / 1000:.2f}m" if avg_current_distance else "--", "Current counted targets")
+        callout_card("Dominant Behavior", dominant_behavior, "From visible filtered observations")
     with target_cols[3]:
-        callout_card("Target Trail", f"{len(recent_targets)} obs", "Recent radar observations plotted below")
+        callout_card("Stationary Time", format_minutes(stationary_minutes), "Engaged stationary time in filtered trail")
 
-    render_floor_map(recent_targets, x_edges, y_edges, x_names, y_names)
+    insight_cols = st.columns(4)
+    with insight_cols[0]:
+        callout_card("Avg Distance", f"{avg_current_distance / 1000:.2f}m" if avg_current_distance else "--", "Current counted targets")
+    with insight_cols[1]:
+        callout_card("Approach / Leave", f"{approach_count} / {leaving_count}", "Directional observations in filtered trail")
+    with insight_cols[2]:
+        callout_card("Visible Trail", f"{len(filtered_targets)} obs", "After filters")
+    with insight_cols[3]:
+        callout_card("Color Mode", color_mode, "Applied to map and trail chart")
+
+    render_floor_map(filtered_targets, x_edges, y_edges, x_names, y_names, color_by=color_column)
 
     left, right = st.columns(2)
     with left:
-        if not recent_targets.empty:
+        if not filtered_targets.empty:
             fig = px.scatter(
-                recent_targets,
+                filtered_targets,
                 x="captured_at",
                 y="distance_mm",
-                color="motion",
-                symbol="target_slot",
-                hover_data=["zone", "x_mm", "y_mm", "speed_cms", "resolution_mm"],
-                title="Target Distance and Motion Trail",
+                color=color_column,
+                symbol="motion",
+                hover_data=["zone_label", "x_mm", "y_mm", "speed_cms", "resolution_mm", "behavior"],
+                title=f"Target Distance Trail Colored by {color_mode}",
+                color_discrete_map={
+                    "Approaching": "#0f9f6e",
+                    "Engaged stationary": "#2563eb",
+                    "Leaving": "#e86e32",
+                    "Passerby / out of zone": "#94a3b8",
+                    "STATIONARY": "#2563eb",
+                    "APPROACHING": "#0f9f6e",
+                    "MOVING_AWAY": "#e86e32",
+                },
             )
             fig.update_layout(
                 height=360,
@@ -1579,28 +1739,43 @@ elif active_view == "Targets":
                 xaxis_title="Time",
                 yaxis_title="Distance from radar, mm",
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
         else:
             st.info("No target observations in this window.")
 
     with right:
-        if not recent_targets.empty:
-            motion = recent_targets.groupby("motion", dropna=False).size().reset_index(name="observations")
-            fig = px.pie(motion, names="motion", values="observations", title="Motion Mix")
-            fig.update_layout(height=360, paper_bgcolor="#ffffff", font_color="#111827")
-            st.plotly_chart(fig, use_container_width=True)
+        if not filtered_targets.empty:
+            behavior_mix = filtered_targets.groupby("behavior", dropna=False).size().reset_index(name="observations")
+            fig = px.bar(
+                behavior_mix.sort_values("observations"),
+                x="observations",
+                y="behavior",
+                orientation="h",
+                title="Behavior Mix",
+                color="behavior",
+                color_discrete_map={
+                    "Approaching": "#0f9f6e",
+                    "Engaged stationary": "#2563eb",
+                    "Leaving": "#e86e32",
+                    "Passerby / out of zone": "#94a3b8",
+                },
+            )
+            fig.update_layout(
+                height=360,
+                margin=dict(l=10, r=10, t=52, b=10),
+                paper_bgcolor="#ffffff",
+                plot_bgcolor="#ffffff",
+                font_color="#111827",
+                xaxis_title="Observations",
+                yaxis_title="",
+                showlegend=False,
+            )
+            st.plotly_chart(fig, width="stretch")
         else:
             st.info("No target observations in this window.")
 
-    if not recent_targets.empty:
-        banded = recent_targets.copy()
-        banded["distance_band"] = pd.cut(
-            banded["distance_mm"].fillna(0),
-            bins=[0, 1000, 2200, 3800, 6000, float("inf")],
-            labels=["Front 0-1m", "Near 1-2.2m", "Mid 2.2-3.8m", "Far 3.8-6m", "Out of range"],
-            include_lowest=True,
-        )
-        band_counts = banded.groupby("distance_band", observed=False).size().reset_index(name="observations")
+    if not filtered_targets.empty:
+        band_counts = filtered_targets.groupby("distance_band", observed=False).size().reset_index(name="observations")
         fig = px.bar(
             band_counts,
             x="distance_band",
@@ -1619,13 +1794,32 @@ elif active_view == "Targets":
             yaxis_title="Observations",
             coloraxis_showscale=False,
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
+
+        zone_behavior = (
+            filtered_targets.groupby(["zone_label", "behavior"], as_index=False)
+            .agg(observations=("captured_at", "count"), minutes=("duration_s", lambda values: float(values.sum()) / 60.0))
+            .sort_values(["observations", "minutes"], ascending=False)
+        )
+        st.subheader("Zone x Behavior Detail")
+        st.dataframe(
+            zone_behavior.rename(
+                columns={
+                    "zone_label": "Zone",
+                    "behavior": "Behavior",
+                    "observations": "Observations",
+                    "minutes": "Minutes",
+                }
+            ).round(2),
+            width="stretch",
+            hide_index=True,
+        )
 
     st.subheader("Latest Targets")
     if latest_targets.empty:
         st.write("No current targets.")
     else:
-        st.dataframe(latest_targets, use_container_width=True, hide_index=True)
+        st.dataframe(latest_targets, width="stretch", hide_index=True)
 
     st.info(
         "LD2450 target fields are position, speed, distance, angle, and resolution. "
@@ -1668,6 +1862,6 @@ elif active_view == "Data Health":
                 "last_frame_age_ms",
             ]
         ].sort_values("captured_at", ascending=False),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
