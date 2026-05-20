@@ -534,6 +534,71 @@ def zone_visit_counts(df: pd.DataFrame, x_names: list[str], y_names: list[str]) 
     return visits
 
 
+def crowd_concentration(
+    df: pd.DataFrame,
+    x_names: list[str],
+    y_names: list[str],
+) -> tuple[dict[str, list[list[float]]], list[list[float]], pd.DataFrame]:
+    rows = len(y_names)
+    cols = len(x_names)
+    buckets = {
+        "Solo": empty_matrix(rows, cols),
+        "Pairs": empty_matrix(rows, cols),
+        "Groups": empty_matrix(rows, cols),
+    }
+    crowd_pressure = empty_matrix(rows, cols)
+    peak_people = empty_matrix(rows, cols)
+
+    for _, record in df.iterrows():
+        duration_min = float(record.get("duration_s") or 0) / 60.0
+        matrix = record.get("zone_now") or []
+
+        for row_idx, row in enumerate(matrix):
+            if row_idx >= rows:
+                continue
+            for col_idx, value in enumerate(row or []):
+                if col_idx >= cols:
+                    continue
+
+                count = int(value or 0)
+                peak_people[row_idx][col_idx] = max(peak_people[row_idx][col_idx], float(count))
+
+                if count == 1:
+                    buckets["Solo"][row_idx][col_idx] += duration_min
+                elif count == 2:
+                    buckets["Pairs"][row_idx][col_idx] += duration_min
+                    crowd_pressure[row_idx][col_idx] += duration_min
+                elif count >= 3:
+                    buckets["Groups"][row_idx][col_idx] += duration_min
+                    crowd_pressure[row_idx][col_idx] += duration_min * (count - 1)
+
+    table_rows: list[dict[str, Any]] = []
+    for row_idx, row_name in enumerate(y_names):
+        for col_idx, col_name in enumerate(x_names):
+            solo = buckets["Solo"][row_idx][col_idx]
+            pairs = buckets["Pairs"][row_idx][col_idx]
+            groups = buckets["Groups"][row_idx][col_idx]
+            values = {"Solo": solo, "Pairs": pairs, "Groups": groups}
+            dominant = max(values, key=values.get) if max(values.values()) > 0 else "None"
+            table_rows.append(
+                {
+                    "zone": f"{row_name}-{col_name}",
+                    "solo_minutes": solo,
+                    "pair_minutes": pairs,
+                    "group_minutes": groups,
+                    "crowd_pressure": crowd_pressure[row_idx][col_idx],
+                    "peak_people": int(peak_people[row_idx][col_idx]),
+                    "dominant_pattern": dominant,
+                }
+            )
+
+    concentration_table = pd.DataFrame(table_rows).sort_values(
+        ["crowd_pressure", "group_minutes", "pair_minutes", "solo_minutes"],
+        ascending=False,
+    )
+    return buckets, crowd_pressure, concentration_table
+
+
 def summarize_period(df: pd.DataFrame) -> dict[str, float]:
     if df.empty:
         return {
@@ -717,6 +782,8 @@ def render_retail_floor_heatmap(
     y_names: list[str],
     title: str,
     is_live: bool,
+    unit: str = "person-min",
+    metric_label: str = "Dwell",
 ) -> None:
     rows = len(y_names)
     cols = len(x_names)
@@ -769,11 +836,11 @@ def render_retail_floor_heatmap(
             ygap=9,
             hovertemplate=(
                 "<b>%{customdata[0]}</b><br>"
-                "Dwell: %{customdata[1]:.2f} person-min<br>"
+                f"{metric_label}: " + "%{customdata[1]:.2f} " + unit + "<br>"
                 "People now: %{customdata[2]}<extra></extra>"
             ),
             colorbar=dict(
-                title="person-min",
+                title=unit,
                 thickness=14,
                 len=0.82,
                 outlinewidth=0,
@@ -1089,6 +1156,7 @@ for _, record in df.iterrows():
     occupied = [[1 if float(cell or 0) > 0 else 0 for cell in row] for row in (record.get("zone_now") or [])]
     matrix_add(zone_occupied_matrix, occupied, duration_s / 60.0)
 
+concentration_buckets, crowd_pressure_matrix, concentration_table = crowd_concentration(df, x_names, y_names)
 sessions = occupied_sessions(df, session_gap_s=session_gap_s)
 latest_age_s = (datetime.now(timezone.utc) - latest["captured_at"].to_pydatetime()).total_seconds()
 is_live = latest_age_s <= LIVE_FEED_TIMEOUT_S
@@ -1112,7 +1180,7 @@ active_zone_text = ", ".join(active_zone_labels[:3]) if active_zone_labels else 
 top_zone = zone_table.iloc[0]["zone"] if not zone_table.empty else "none"
 top_zone_label = clean_label(top_zone).upper()
 
-view_options = ["Heatmap", "Executive View", "Zones", "Dwell", "Campaign Impact", "Targets", "Data Health"]
+view_options = ["Heatmap", "Crowd Concentration", "Executive View", "Zones", "Dwell", "Campaign Impact", "Targets", "Data Health"]
 active_view = st.radio("View", view_options, horizontal=True, label_visibility="collapsed")
 
 if active_view == "Heatmap":
@@ -1186,6 +1254,74 @@ if active_view == "Heatmap":
             use_container_width=True,
             hide_index=True,
         )
+
+elif active_view == "Crowd Concentration":
+    render_heatmap_banner(
+        "Crowd Concentration",
+        "Separates solo browsing from pair and group gathering. Useful for spotting where products pull shared attention.",
+    )
+
+    top_crowd = concentration_table.iloc[0] if not concentration_table.empty else None
+    top_crowd_pressure = float(top_crowd["crowd_pressure"]) if top_crowd is not None else 0.0
+    total_pair_group = float(concentration_table["pair_minutes"].sum() + concentration_table["group_minutes"].sum()) if not concentration_table.empty else 0.0
+    total_solo = float(concentration_table["solo_minutes"].sum()) if not concentration_table.empty else 0.0
+    group_zone = concentration_table.sort_values("group_minutes", ascending=False).iloc[0] if not concentration_table.empty else None
+
+    crowd_cols = st.columns(4)
+    with crowd_cols[0]:
+        callout_card(
+            "Gathering Zone",
+            clean_label(top_crowd["zone"]).upper() if top_crowd_pressure > 0 else "NONE",
+            f"{format_minutes(top_crowd_pressure)} pressure" if top_crowd_pressure > 0 else "No 2+ person gathering yet",
+        )
+    with crowd_cols[1]:
+        callout_card("Solo Time", format_minutes(total_solo), "One-person browsing minutes")
+    with crowd_cols[2]:
+        callout_card("Pair/Group Time", format_minutes(total_pair_group), "Minutes with 2+ people in the same zone")
+    with crowd_cols[3]:
+        callout_card(
+            "Group Hotspot",
+            clean_label(group_zone["zone"]).upper() if group_zone is not None and float(group_zone["group_minutes"]) > 0 else "NONE",
+            "3+ people together" if group_zone is not None and float(group_zone["group_minutes"]) > 0 else "No 3+ person gathering yet",
+        )
+
+    render_retail_floor_heatmap(
+        crowd_pressure_matrix,
+        current_heatmap_matrix,
+        current_targets,
+        x_names,
+        y_names,
+        "Crowd Pressure: 2+ People in the Same Zone",
+        is_live,
+        unit="pressure-min",
+        metric_label="Crowd pressure",
+    )
+
+    st.subheader("Occupancy Pattern Heatmaps")
+    solo_col, pair_col, group_col = st.columns(3)
+    with solo_col:
+        render_heatmap(concentration_buckets["Solo"], x_names, y_names, "Solo Presence", "min")
+    with pair_col:
+        render_heatmap(concentration_buckets["Pairs"], x_names, y_names, "Pairs", "min")
+    with group_col:
+        render_heatmap(concentration_buckets["Groups"], x_names, y_names, "Groups 3+", "min")
+
+    st.subheader("Crowd Pattern Ranking")
+    display_concentration = concentration_table.copy()
+    display_concentration["Zone"] = display_concentration["zone"].map(lambda value: clean_label(value).upper())
+    display_concentration = display_concentration[
+        ["Zone", "solo_minutes", "pair_minutes", "group_minutes", "crowd_pressure", "peak_people", "dominant_pattern"]
+    ].rename(
+        columns={
+            "solo_minutes": "Solo min",
+            "pair_minutes": "Pair min",
+            "group_minutes": "3+ group min",
+            "crowd_pressure": "Crowd pressure",
+            "peak_people": "Peak people",
+            "dominant_pattern": "Dominant pattern",
+        }
+    )
+    st.dataframe(display_concentration.round(2), use_container_width=True, hide_index=True)
 
 elif active_view == "Executive View":
     left, right = st.columns([1.25, 1])
@@ -1398,47 +1534,120 @@ elif active_view == "Campaign Impact":
         st.info("Previous-period comparison will appear once there is enough history.")
 
 elif active_view == "Targets":
-    render_floor_map(targets, x_edges, y_edges, x_names, y_names)
+    latest_targets = latest_targets_table(latest)
+    counted_latest = latest_targets[latest_targets["Counted"] == True] if not latest_targets.empty else pd.DataFrame()
+    current_target_count = len(counted_latest)
+    current_target_zones = (
+        ", ".join(counted_latest["Zone"].dropna().map(lambda value: clean_label(value).upper()).unique()[:3])
+        if not counted_latest.empty
+        else ("Clear" if is_live else "Offline")
+    )
+    avg_current_distance = float(counted_latest["Distance mm"].mean()) if not counted_latest.empty else 0.0
+    recent_target_limit = st.slider("Recent target trail", min_value=50, max_value=1000, value=300, step=50)
+    recent_targets = targets.tail(recent_target_limit).copy() if not targets.empty else pd.DataFrame()
+
+    target_cols = st.columns(4)
+    with target_cols[0]:
+        callout_card("Current Targets", str(current_target_count) if is_live else "--", "Counted targets right now")
+    with target_cols[1]:
+        callout_card("Current Zones", current_target_zones, "Where the latest target slots are located")
+    with target_cols[2]:
+        callout_card("Avg Distance", f"{avg_current_distance / 1000:.2f}m" if avg_current_distance else "--", "Current counted targets")
+    with target_cols[3]:
+        callout_card("Target Trail", f"{len(recent_targets)} obs", "Recent radar observations plotted below")
+
+    render_floor_map(recent_targets, x_edges, y_edges, x_names, y_names)
 
     left, right = st.columns(2)
     with left:
-        if not targets.empty:
-            motion = targets.groupby("motion", dropna=False).size().reset_index(name="observations")
+        if not recent_targets.empty:
+            fig = px.scatter(
+                recent_targets,
+                x="captured_at",
+                y="distance_mm",
+                color="motion",
+                symbol="target_slot",
+                hover_data=["zone", "x_mm", "y_mm", "speed_cms", "resolution_mm"],
+                title="Target Distance and Motion Trail",
+            )
+            fig.update_layout(
+                height=360,
+                margin=dict(l=10, r=10, t=52, b=10),
+                paper_bgcolor="#ffffff",
+                plot_bgcolor="#ffffff",
+                font_color="#111827",
+                xaxis_title="Time",
+                yaxis_title="Distance from radar, mm",
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No target observations in this window.")
+
+    with right:
+        if not recent_targets.empty:
+            motion = recent_targets.groupby("motion", dropna=False).size().reset_index(name="observations")
             fig = px.pie(motion, names="motion", values="observations", title="Motion Mix")
             fig.update_layout(height=360, paper_bgcolor="#ffffff", font_color="#111827")
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No target observations in this window.")
 
-    with right:
-        latest_targets = latest_targets_table(latest)
-        st.subheader("Latest Targets")
-        if latest_targets.empty:
-            st.write("No current targets.")
-        else:
-            st.dataframe(latest_targets, use_container_width=True, hide_index=True)
+    if not recent_targets.empty:
+        banded = recent_targets.copy()
+        banded["distance_band"] = pd.cut(
+            banded["distance_mm"].fillna(0),
+            bins=[0, 1000, 2200, 3800, 6000, float("inf")],
+            labels=["Front 0-1m", "Near 1-2.2m", "Mid 2.2-3.8m", "Far 3.8-6m", "Out of range"],
+            include_lowest=True,
+        )
+        band_counts = banded.groupby("distance_band", observed=False).size().reset_index(name="observations")
+        fig = px.bar(
+            band_counts,
+            x="distance_band",
+            y="observations",
+            title="Target Observations by Distance Band",
+            color="observations",
+            color_continuous_scale=["#cfece6", "#14956f", "#f0b84a"],
+        )
+        fig.update_layout(
+            height=320,
+            margin=dict(l=10, r=10, t=52, b=10),
+            paper_bgcolor="#ffffff",
+            plot_bgcolor="#ffffff",
+            font_color="#111827",
+            xaxis_title="",
+            yaxis_title="Observations",
+            coloraxis_showscale=False,
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("Latest Targets")
+    if latest_targets.empty:
+        st.write("No current targets.")
+    else:
+        st.dataframe(latest_targets, use_container_width=True, hide_index=True)
+
+    st.info(
+        "LD2450 target fields are position, speed, distance, angle, and resolution. "
+        "They are useful for movement and zone behavior, but not reliable for age, identity, height, or body-size classification."
+    )
 
 elif active_view == "Data Health":
     latest_network = latest.get("network") or {}
-    latest_raw = latest.get("raw_payload") or {}
-    latest_snapshot = latest_raw.get("snapshot") or {}
-    latest_cloud = latest_snapshot.get("cloud") or {}
     health_cols = st.columns(4)
     health_cols[0].metric("Last Upload Age", format_seconds(latest_age_s))
     health_cols[1].metric("Frame Count", int(latest.get("frames_count") or 0))
     health_cols[2].metric("Bad Frames", int(latest.get("bad_frames_count") or 0))
-    health_cols[3].metric("Cloud Status", latest_cloud.get("lastStatusCode", "unknown"))
+    health_cols[3].metric("Firmware", latest.get("firmware") or "unknown")
 
     details = {
         "sensor_id": latest.get("sensor_id"),
         "captured_at": str(latest.get("captured_at")),
+        "firmware": latest.get("firmware"),
         "network_mode": latest_network.get("mode"),
         "ip": latest_network.get("ip"),
         "ssid": latest_network.get("ssid"),
         "rssi_dbm": latest_network.get("rssiDbm"),
-        "cloud_ok_count": latest_cloud.get("okCount"),
-        "cloud_fail_count": latest_cloud.get("failCount"),
-        "last_cloud_message": latest_cloud.get("message"),
         "rows_loaded": len(all_df),
         "analysis_rows": len(df),
     }
