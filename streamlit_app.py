@@ -1070,6 +1070,16 @@ def render_floor_map(
 
         for idx, (label, group) in enumerate(recent.groupby(color_by, dropna=False)):
             color = fixed_colors.get(str(label), palette[idx % len(palette)])
+            hover_color_values = group[color_by].fillna("Unknown").astype(str)
+            customdata = list(
+                zip(
+                    group["display_time"].astype(str),
+                    group["distance_mm"].astype(str),
+                    group["motion"].astype(str),
+                    group["speed_cms"].astype(str),
+                    hover_color_values,
+                )
+            )
             fig.add_trace(
                 go.Scatter(
                     x=group["x_mm"],
@@ -1082,7 +1092,7 @@ def render_floor_map(
                         line=dict(width=1, color="#ffffff"),
                     ),
                     text=group["zone"],
-                    customdata=group[["display_time", "distance_mm", "motion", "speed_cms", color_by]],
+                    customdata=customdata,
                     hovertemplate=(
                         "%{text}<br>X %{x} mm | Y %{y} mm<br>"
                         "%{customdata[0]} | %{customdata[1]} mm<br>"
