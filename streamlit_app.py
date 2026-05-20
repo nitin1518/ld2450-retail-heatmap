@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from html import escape
 from typing import Any
 
 import pandas as pd
@@ -214,6 +215,172 @@ CSS = """
   }
 
   div[data-testid="stMetricValue"] {
+    color: var(--ink);
+  }
+
+  .owner-floor-wrap {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 16px;
+    box-shadow: 0 1px 2px rgba(16, 24, 40, .04);
+    margin-bottom: 16px;
+  }
+
+  .owner-floor-title {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 14px;
+    margin-bottom: 12px;
+  }
+
+  .owner-floor-title .title {
+    color: var(--ink);
+    font-size: 18px;
+    font-weight: 780;
+  }
+
+  .owner-floor-title .subtitle {
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.35;
+    margin-top: 4px;
+  }
+
+  .owner-floor-grid {
+    display: grid;
+    gap: 10px;
+  }
+
+  .owner-zone-card {
+    min-height: 132px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 12px;
+    background: #f8fafc;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+
+  .owner-zone-card.live {
+    background: #ecfdf5;
+    border-color: rgba(15, 159, 110, .38);
+  }
+
+  .owner-zone-card.hot {
+    background: #fff7ed;
+    border-color: rgba(232, 110, 50, .38);
+  }
+
+  .owner-zone-card.move {
+    background: #eff6ff;
+    border-color: rgba(37, 99, 235, .28);
+  }
+
+  .owner-zone-card.risk {
+    background: #fef2f2;
+    border-color: rgba(194, 65, 12, .34);
+  }
+
+  .owner-zone-card.pass {
+    background: #fffbeb;
+    border-color: rgba(183, 121, 31, .32);
+  }
+
+  .owner-zone-card.quiet {
+    background: #f8fafc;
+    color: #475467;
+  }
+
+  .owner-zone-name {
+    color: var(--ink);
+    font-size: 12px;
+    font-weight: 780;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+  }
+
+  .owner-zone-status {
+    margin-top: 8px;
+    color: var(--ink);
+    font-size: 21px;
+    line-height: 1.08;
+    font-weight: 800;
+  }
+
+  .owner-zone-note {
+    margin-top: 6px;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.3;
+  }
+
+  .owner-zone-metrics {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 10px;
+  }
+
+  .owner-zone-metrics span {
+    border: 1px solid rgba(17, 24, 39, .08);
+    border-radius: 999px;
+    background: rgba(255,255,255,.72);
+    padding: 4px 7px;
+    color: #344054;
+    font-size: 11px;
+    font-weight: 700;
+  }
+
+  .owner-attention-track {
+    height: 7px;
+    border-radius: 999px;
+    background: rgba(15, 23, 42, .08);
+    overflow: hidden;
+    margin-top: 10px;
+  }
+
+  .owner-attention-fill {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #9ad7ca, #14956f, #f0b84a);
+  }
+
+  .owner-brief-panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 16px 18px;
+    box-shadow: 0 1px 2px rgba(16, 24, 40, .04);
+    margin-bottom: 16px;
+  }
+
+  .owner-brief-panel h3 {
+    margin: 0 0 10px;
+    font-size: 18px;
+  }
+
+  .owner-brief-panel ul {
+    margin: 0;
+    padding-left: 18px;
+    color: #344054;
+    font-size: 14px;
+    line-height: 1.55;
+  }
+
+  .owner-brief-panel li + li {
+    margin-top: 7px;
+  }
+
+  .owner-action {
+    border-left: 4px solid var(--green);
+    padding-left: 12px;
+  }
+
+  .owner-action strong {
     color: var(--ink);
   }
 
@@ -967,6 +1134,217 @@ def service_coverage_analysis(
     }
 
 
+def owner_location_summary(
+    zone_table: pd.DataFrame,
+    targets: pd.DataFrame,
+    risk_floor: pd.DataFrame,
+    current_matrix: list[list[float]],
+    concentration_table: pd.DataFrame,
+    x_names: list[str],
+    y_names: list[str],
+) -> pd.DataFrame:
+    current = coerce_matrix(current_matrix, len(y_names), len(x_names))
+    zone_lookup = {
+        clean_label(row["zone"]).upper(): row
+        for _, row in zone_table.iterrows()
+    }
+
+    moving_minutes: dict[str, float] = {}
+    stationary_minutes: dict[str, float] = {}
+    if not targets.empty:
+        counted = targets[targets["counted"]].copy()
+        if not counted.empty:
+            moving = counted[counted["behavior"].isin(["Approaching", "Leaving"])]
+            stationary = counted[counted["behavior"] == "Engaged stationary"]
+            moving_minutes = moving.groupby("zone_label")["duration_s"].sum().div(60).to_dict()
+            stationary_minutes = stationary.groupby("zone_label")["duration_s"].sum().div(60).to_dict()
+
+    risk_minutes = (
+        risk_floor.groupby("zone_label")["duration_s"].sum().div(60).to_dict()
+        if not risk_floor.empty
+        else {}
+    )
+    crowd_lookup = (
+        {
+            clean_label(row["zone"]).upper(): float(row["crowd_pressure"] or 0)
+            for _, row in concentration_table.iterrows()
+        }
+        if not concentration_table.empty
+        else {}
+    )
+
+    rows: list[dict[str, Any]] = []
+    for row_idx, row_name in enumerate(y_names):
+        for col_idx, col_name in enumerate(x_names):
+            zone_label = clean_label(f"{row_name} {col_name}").upper()
+            zone_row = zone_lookup.get(zone_label)
+            dwell = float(zone_row["dwell_minutes"]) if zone_row is not None else 0.0
+            visits = int(zone_row["estimated_visits"]) if zone_row is not None and "estimated_visits" in zone_row else 0
+            occupied = float(zone_row["occupied_minutes"]) if zone_row is not None else 0.0
+            rows.append(
+                {
+                    "row": row_idx,
+                    "col": col_idx,
+                    "zone_label": zone_label,
+                    "dwell_minutes": dwell,
+                    "occupied_minutes": occupied,
+                    "estimated_visits": visits,
+                    "now": int(current[row_idx][col_idx]),
+                    "moving_minutes": float(moving_minutes.get(zone_label, 0.0)),
+                    "stationary_minutes": float(stationary_minutes.get(zone_label, 0.0)),
+                    "risk_minutes": float(risk_minutes.get(zone_label, 0.0)),
+                    "crowd_pressure": float(crowd_lookup.get(zone_label, 0.0)),
+                }
+            )
+
+    result = pd.DataFrame(rows)
+    if result.empty:
+        return result
+
+    for source, normalized in [
+        ("dwell_minutes", "dwell_score"),
+        ("estimated_visits", "visit_score"),
+        ("moving_minutes", "move_score"),
+        ("crowd_pressure", "crowd_score"),
+    ]:
+        max_value = float(result[source].max() or 0)
+        result[normalized] = result[source] / max_value if max_value else 0.0
+
+    result["attention_score"] = (
+        result["dwell_score"] * 55
+        + result["visit_score"] * 20
+        + result["move_score"] * 15
+        + result["crowd_score"] * 10
+    )
+
+    top_attention = result.sort_values(["attention_score", "dwell_minutes"], ascending=False).iloc[0]["zone_label"]
+    top_movement = result.sort_values(["moving_minutes", "estimated_visits"], ascending=False).iloc[0]["zone_label"]
+    active_risk = float(result["risk_minutes"].max() or 0)
+    nonzero_dwell = result.loc[result["dwell_minutes"] > 0, "dwell_minutes"]
+    low_dwell_cutoff = float(nonzero_dwell.quantile(0.35)) if not nonzero_dwell.empty else 0.0
+
+    statuses: list[str] = []
+    classes: list[str] = []
+    notes: list[str] = []
+    for _, row in result.iterrows():
+        if row["risk_minutes"] > 0 and row["risk_minutes"] >= max(1.0, active_risk * 0.45):
+            statuses.append("Service watch")
+            classes.append("risk")
+            notes.append("Customers moved here while counter was held")
+        elif row["now"] > 0:
+            statuses.append("Live now")
+            classes.append("live")
+            notes.append("Person detected in this zone")
+        elif row["zone_label"] == top_attention and row["attention_score"] > 0:
+            statuses.append("Main attention")
+            classes.append("hot")
+            notes.append("Strongest pull in this window")
+        elif row["zone_label"] == top_movement and row["moving_minutes"] > 0:
+            statuses.append("Movement lane")
+            classes.append("move")
+            notes.append("Frequent customer motion")
+        elif row["estimated_visits"] > 0 and row["dwell_minutes"] <= low_dwell_cutoff:
+            statuses.append("Pass-through")
+            classes.append("pass")
+            notes.append("People pass but do not stay")
+        elif row["dwell_minutes"] > 0:
+            statuses.append("Some interest")
+            classes.append("move")
+            notes.append("Measured attention, but not the top zone")
+        else:
+            statuses.append("Quiet")
+            classes.append("quiet")
+            notes.append("Little activity in this window")
+
+    result["owner_status"] = statuses
+    result["status_class"] = classes
+    result["owner_note"] = notes
+    return result
+
+
+def owner_zone_lookup(frame: pd.DataFrame) -> dict[str, pd.Series]:
+    if frame.empty:
+        return {}
+    return {str(row["zone_label"]): row for _, row in frame.iterrows()}
+
+
+def render_owner_floor_map(owner_zones: pd.DataFrame, x_names: list[str], y_names: list[str]) -> None:
+    if owner_zones.empty:
+        st.info("No location data available for the selected window.")
+        return
+
+    lookup = owner_zone_lookup(owner_zones)
+    max_score = max(float(owner_zones["attention_score"].max() or 0), 1.0)
+    cards: list[str] = []
+    for row_idx in reversed(range(len(y_names))):
+        for col_idx, col_name in enumerate(x_names):
+            zone_label = clean_label(f"{y_names[row_idx]} {col_name}").upper()
+            row = lookup.get(zone_label)
+            if row is None:
+                continue
+            score_width = min(max(float(row["attention_score"]) / max_score * 100, 4), 100)
+            metrics = [
+                f"Now {int(row['now'])}",
+                f"Dwell {format_minutes(float(row['dwell_minutes']))}",
+                f"Move {format_minutes(float(row['moving_minutes']))}",
+            ]
+            if float(row["risk_minutes"]) > 0:
+                metrics.append(f"Risk {format_minutes(float(row['risk_minutes']))}")
+
+            cards.append(
+                f'<div class="owner-zone-card {escape(str(row["status_class"]))}">'
+                f'<div><div class="owner-zone-name">{escape(zone_label)}</div>'
+                f'<div class="owner-zone-status">{escape(str(row["owner_status"]))}</div>'
+                f'<div class="owner-zone-note">{escape(str(row["owner_note"]))}</div></div>'
+                f'<div><div class="owner-zone-metrics">'
+                f'{"".join(f"<span>{escape(metric)}</span>" for metric in metrics)}'
+                f'</div><div class="owner-attention-track">'
+                f'<span class="owner-attention-fill" style="width:{score_width:.0f}%"></span>'
+                f'</div></div></div>'
+            )
+
+    st.markdown(
+        (
+            '<div class="owner-floor-wrap">'
+            '<div class="owner-floor-title"><div>'
+            '<div class="title">Simple Store Location Map</div>'
+            '<div class="subtitle">Each block is a radar zone. The label tells the owner what is happening there.</div>'
+            '</div></div>'
+            f'<div class="owner-floor-grid" style="grid-template-columns: repeat({max(len(x_names), 1)}, minmax(130px, 1fr));">'
+            f'{"".join(cards)}'
+            '</div></div>'
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def render_owner_brief(story_lines: list[str], actions: list[tuple[str, str]]) -> None:
+    story_html = "".join(f"<li>{escape(line)}</li>" for line in story_lines)
+    action_html = "".join(
+        '<div class="callout-card owner-action">'
+        '<div class="label">Suggested action</div>'
+        f'<div class="value">{escape(title)}</div>'
+        f'<div class="note">{escape(note)}</div>'
+        '</div>'
+        for title, note in actions
+    )
+    st.markdown(
+        f'<div class="owner-brief-panel"><h3>Today\'s Store Story</h3><ul>{story_html}</ul></div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(action_html, unsafe_allow_html=True)
+
+
+def previous_zone_dwell(previous_zone_table: pd.DataFrame, zone_label: str) -> float:
+    if previous_zone_table.empty:
+        return 0.0
+    lookup = {
+        clean_label(row["zone"]).upper(): float(row["dwell_minutes"] or 0)
+        for _, row in previous_zone_table.iterrows()
+    }
+    return float(lookup.get(zone_label, 0.0))
+
+
 def render_heatmap_banner(title: str, subtitle: str) -> None:
     st.markdown(
         f"""
@@ -1397,6 +1775,7 @@ latest = df.iloc[-1]
 targets = target_observations(df)
 target_view = enrich_targets(targets)
 zone_table = zone_summary(df, x_names, y_names)
+previous_zone_table = zone_summary(previous_df, x_names, y_names) if not previous_df.empty else pd.DataFrame()
 visits_by_zone = zone_visit_counts(df, x_names, y_names)
 zone_table["estimated_visits"] = zone_table["zone"].map(visits_by_zone).fillna(0).astype(int)
 zone_table["avg_dwell_s"] = zone_table.apply(
@@ -1438,6 +1817,7 @@ top_zone_label = clean_label(top_zone).upper()
 zone_options = all_zone_labels(x_names, y_names)
 
 view_options = [
+    "Owner Brief",
     "Heatmap",
     "Crowd Concentration",
     "Service Coverage",
@@ -1450,7 +1830,147 @@ view_options = [
 ]
 active_view = st.radio("View", view_options, horizontal=True, label_visibility="collapsed")
 
-if active_view == "Heatmap":
+if active_view == "Owner Brief":
+    owner_counter_zones = default_counter_zones(target_view, zone_options)
+    owner_floor_zones = [zone for zone in zone_options if zone not in owner_counter_zones]
+    owner_service = service_coverage_analysis(
+        target_view,
+        owner_counter_zones,
+        owner_floor_zones,
+        stationary_speed_cms=3,
+        moving_speed_cms=6,
+    )
+    owner_service_frames = owner_service["frames"]
+    owner_risk_floor = owner_service["risk_floor"]
+    owner_risk_segments = owner_service["risk_segments"]
+    owner_zones = owner_location_summary(
+        zone_table,
+        target_view,
+        owner_risk_floor,
+        current_heatmap_matrix,
+        concentration_table,
+        x_names,
+        y_names,
+    )
+
+    top_owner_zone = owner_zones.sort_values(["attention_score", "dwell_minutes"], ascending=False).iloc[0]
+    movement_zone = owner_zones.sort_values(["moving_minutes", "estimated_visits"], ascending=False).iloc[0]
+    risk_zone = owner_zones.sort_values(["risk_minutes", "moving_minutes"], ascending=False).iloc[0]
+    pass_candidates = owner_zones[
+        (owner_zones["estimated_visits"] > 0)
+        & (owner_zones["dwell_minutes"] <= owner_zones["dwell_minutes"].replace(0, pd.NA).dropna().median())
+    ].copy()
+    quiet_zone = (
+        pass_candidates.sort_values(["estimated_visits", "moving_minutes"], ascending=False).iloc[0]
+        if not pass_candidates.empty
+        else owner_zones.sort_values(["attention_score", "dwell_minutes"], ascending=True).iloc[0]
+    )
+
+    risk_minutes = (
+        float(owner_service_frames.loc[owner_service_frames["service_risk"], "duration_s"].sum()) / 60.0
+        if not owner_service_frames.empty
+        else 0.0
+    )
+    floor_motion_minutes = (
+        float(owner_service_frames.loc[owner_service_frames["floor_moving"], "duration_s"].sum()) / 60.0
+        if not owner_service_frames.empty
+        else 0.0
+    )
+    trend_previous = previous_zone_dwell(previous_zone_table, str(top_owner_zone["zone_label"]))
+    trend_current = float(top_owner_zone["dwell_minutes"])
+    trend_text = "No previous comparison yet"
+    if trend_previous > 0:
+        trend_change = ((trend_current - trend_previous) / trend_previous) * 100
+        direction = "up" if trend_change >= 0 else "down"
+        trend_text = f"{direction} {abs(trend_change):.0f}% vs previous {hours}h window"
+
+    render_heatmap_banner(
+        "Owner Brief",
+        "A plain-language read of the floor: where people are, what pulled attention, and what needs action.",
+    )
+
+    brief_cols = st.columns(4)
+    with brief_cols[0]:
+        callout_card(
+            "Right Now",
+            str(last_people_now) if is_live else "--",
+            active_zone_text if is_live else "Live feed is stale",
+        )
+    with brief_cols[1]:
+        callout_card(
+            "Main Attention",
+            str(top_owner_zone["zone_label"]),
+            f"{format_minutes(float(top_owner_zone['dwell_minutes']))} dwell, {trend_text}",
+        )
+    with brief_cols[2]:
+        callout_card(
+            "Movement Hotspot",
+            str(movement_zone["zone_label"]) if float(movement_zone["moving_minutes"]) > 0 else "NONE",
+            f"{format_minutes(float(movement_zone['moving_minutes']))} customer motion",
+        )
+    with brief_cols[3]:
+        callout_card(
+            "Service Watch",
+            format_minutes(risk_minutes),
+            f"{len(owner_risk_segments)} overlap windows" if not owner_risk_segments.empty else "No counter/floor overlap",
+        )
+
+    render_owner_floor_map(owner_zones, x_names, y_names)
+
+    story_lines = [
+        f"The strongest attention zone is {top_owner_zone['zone_label']} with {format_minutes(float(top_owner_zone['dwell_minutes']))} of measured dwell.",
+        f"The busiest movement zone is {movement_zone['zone_label']} with {format_minutes(float(movement_zone['moving_minutes']))} of motion.",
+        f"The quiet or pass-through area to inspect is {quiet_zone['zone_label']}; people are not staying there long.",
+    ]
+    if risk_minutes > 0:
+        risk_share = risk_minutes / floor_motion_minutes if floor_motion_minutes else 0.0
+        story_lines.append(
+            f"Possible service miss: counter stayed stationary while floor movement was active for {format_minutes(risk_minutes)} ({risk_share * 100:.0f}% of movement time)."
+        )
+    else:
+        story_lines.append("No counter-stationary service-risk overlap was detected in this window.")
+    if float(top_owner_zone["crowd_pressure"]) > 0:
+        story_lines.append(f"Group attention appeared around {top_owner_zone['zone_label']}; that area may be drawing shared interest.")
+
+    actions: list[tuple[str, str]] = []
+    if risk_minutes >= 3:
+        actions.append(
+            (
+                "Check service coverage",
+                f"Review counter behavior when {risk_zone['zone_label']} is active; the system saw {format_minutes(risk_minutes)} of overlap.",
+            )
+        )
+    actions.append(
+        (
+            "Protect the attention winner",
+            f"Keep {top_owner_zone['zone_label']} tidy and stocked; it is currently doing the most work for the store.",
+        )
+    )
+    actions.append(
+        (
+            "Improve the quiet zone",
+            f"Try a clearer price sign, product move, or staff prompt near {quiet_zone['zone_label']} and compare tomorrow.",
+        )
+    )
+
+    left, right = st.columns([1.35, 1])
+    with left:
+        render_owner_brief(story_lines, actions)
+    with right:
+        owner_display = owner_zones.sort_values(["attention_score", "dwell_minutes"], ascending=False).head(6).copy()
+        owner_display["Zone"] = owner_display["zone_label"]
+        owner_display["Signal"] = owner_display["owner_status"]
+        owner_display["Dwell"] = owner_display["dwell_minutes"].map(format_minutes)
+        owner_display["Movement"] = owner_display["moving_minutes"].map(format_minutes)
+        owner_display["Now"] = owner_display["now"].astype(int)
+        st.subheader("Top Locations")
+        st.dataframe(
+            owner_display[["Zone", "Signal", "Now", "Dwell", "Movement"]],
+            width="stretch",
+            hide_index=True,
+        )
+
+elif active_view == "Heatmap":
     render_heatmap_banner(
         "Retail Floor Heatmap",
         f"{hours}h dwell depth with live occupancy overlay. Darker cells held attention longer.",
