@@ -232,6 +232,29 @@ def secret(name: str, default: str = "") -> str:
 SUPABASE_URL = secret("SUPABASE_URL").rstrip("/")
 SUPABASE_SERVICE_ROLE_KEY = secret("SUPABASE_SERVICE_ROLE_KEY")
 DASHBOARD_PASSWORD = secret("DASHBOARD_PASSWORD")
+SNAPSHOT_COLUMNS = ",".join(
+    [
+        "captured_at",
+        "sensor_id",
+        "firmware",
+        "people_now",
+        "targets",
+        "zone_now",
+        "zone_heat",
+        "zone_x_names",
+        "zone_y_names",
+        "zone_x_edges",
+        "zone_y_edges",
+        "frames_count",
+        "bad_frames_count",
+        "dropped_bytes",
+        "rx_bytes",
+        "last_frame_age_ms",
+        "hottest_zone",
+        "hottest_heat",
+        "network",
+    ]
+)
 
 
 def require_password() -> None:
@@ -274,7 +297,7 @@ def request_rows(params: dict[str, str], offset: int, page_size: int) -> list[di
         f"{SUPABASE_URL}/rest/v1/sensor_snapshots",
         headers=supabase_headers(),
         params=page_params,
-        timeout=30,
+        timeout=15,
     )
     response.raise_for_status()
     return response.json()
@@ -287,9 +310,9 @@ def fetch_snapshots(hours: int, sensor_id: str | None, row_cap: int) -> pd.DataF
 
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
     params = {
-        "select": "*",
+        "select": SNAPSHOT_COLUMNS,
         "captured_at": f"gte.{since.isoformat()}",
-        "order": "captured_at.asc",
+        "order": "captured_at.desc",
     }
 
     if sensor_id and sensor_id != "All":
@@ -997,7 +1020,7 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-st_autorefresh(interval=10_000, key="ld2450_dashboard_autorefresh")
+st_autorefresh(interval=60_000, key="ld2450_dashboard_autorefresh")
 
 if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
     st.warning(
@@ -1019,8 +1042,8 @@ with st.sidebar:
     hours = st.select_slider("Analysis window", options=[1, 3, 6, 12, 24, 48, 72, 168], value=24)
     session_gap_s = st.slider("Session merge gap", min_value=20, max_value=180, value=90, step=10)
     max_gap_s = st.slider("Max sample gap", min_value=15, max_value=180, value=45, step=5)
-    row_cap = st.select_slider("Row budget", options=[5000, 10000, 25000, 50000], value=25000)
-    st.caption("Auto-refreshes every 10 seconds.")
+    row_cap = st.select_slider("Row budget", options=[1000, 3000, 5000, 10000], value=1000)
+    st.caption("Auto-refreshes every 60 seconds. Increase row budget only when you need a longer history.")
     if st.button("Refresh now"):
         st.cache_data.clear()
         st.rerun()
@@ -1089,9 +1112,10 @@ active_zone_text = ", ".join(active_zone_labels[:3]) if active_zone_labels else 
 top_zone = zone_table.iloc[0]["zone"] if not zone_table.empty else "none"
 top_zone_label = clean_label(top_zone).upper()
 
-tabs = st.tabs(["Heatmap", "Executive View", "Zones", "Dwell", "Campaign Impact", "Targets", "Data Health"])
+view_options = ["Heatmap", "Executive View", "Zones", "Dwell", "Campaign Impact", "Targets", "Data Health"]
+active_view = st.radio("View", view_options, horizontal=True, label_visibility="collapsed")
 
-with tabs[0]:
+if active_view == "Heatmap":
     render_heatmap_banner(
         "Retail Floor Heatmap",
         f"{hours}h dwell depth with live occupancy overlay. Darker cells held attention longer.",
@@ -1163,7 +1187,7 @@ with tabs[0]:
             hide_index=True,
         )
 
-with tabs[1]:
+elif active_view == "Executive View":
     left, right = st.columns([1.25, 1])
     with left:
         timeline = df[["captured_at", "people_now"]].copy()
@@ -1226,7 +1250,7 @@ with tabs[1]:
         f"{len(previous_df)} previous",
     )
 
-with tabs[2]:
+elif active_view == "Zones":
     left, right = st.columns(2)
     with left:
         render_retail_floor_heatmap(
@@ -1266,7 +1290,7 @@ with tabs[2]:
         mime="text/csv",
     )
 
-with tabs[3]:
+elif active_view == "Dwell":
     left, right = st.columns([1, 1])
     with left:
         hourly = explode_hourly_zone_dwell(df, x_names, y_names)
@@ -1317,7 +1341,7 @@ with tabs[3]:
             hide_index=True,
         )
 
-with tabs[4]:
+elif active_view == "Campaign Impact":
     st.markdown('<div class="section-note">Current window compared with the immediately preceding window of the same length.</div>', unsafe_allow_html=True)
     comp_cols = st.columns(4)
     comp_cols[0].metric(
@@ -1373,7 +1397,7 @@ with tabs[4]:
     else:
         st.info("Previous-period comparison will appear once there is enough history.")
 
-with tabs[5]:
+elif active_view == "Targets":
     render_floor_map(targets, x_edges, y_edges, x_names, y_names)
 
     left, right = st.columns(2)
@@ -1394,7 +1418,7 @@ with tabs[5]:
         else:
             st.dataframe(latest_targets, use_container_width=True, hide_index=True)
 
-with tabs[6]:
+elif active_view == "Data Health":
     latest_network = latest.get("network") or {}
     latest_raw = latest.get("raw_payload") or {}
     latest_snapshot = latest_raw.get("snapshot") or {}
