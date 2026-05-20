@@ -808,6 +808,165 @@ def apply_selection_filter(frame: pd.DataFrame, column: str, selected: list[str]
     return frame[frame[column].isin(selected)].copy()
 
 
+def all_zone_labels(x_names: list[str], y_names: list[str]) -> list[str]:
+    return [clean_label(f"{row_name} {col_name}").upper() for row_name in y_names for col_name in x_names]
+
+
+def default_counter_zones(targets: pd.DataFrame, zone_options: list[str]) -> list[str]:
+    if targets.empty or not zone_options:
+        return zone_options[:1]
+
+    stationary = targets[
+        targets["counted"]
+        & (targets["motion"] == "STATIONARY")
+        & targets["zone_label"].isin(zone_options)
+    ].copy()
+    if not stationary.empty:
+        top_stationary = (
+            stationary.groupby("zone_label")["duration_s"].sum().sort_values(ascending=False).head(1).index.tolist()
+        )
+        if top_stationary:
+            return top_stationary
+
+    preferred = ["NEAR CENTER", "NEAR RIGHT", "NEAR LEFT", "MID CENTER"]
+    for zone in preferred:
+        if zone in zone_options:
+            return [zone]
+    return zone_options[:1]
+
+
+def zone_value_matrix(values: dict[str, float], x_names: list[str], y_names: list[str]) -> list[list[float]]:
+    matrix = empty_matrix(len(y_names), len(x_names))
+    for row_idx, row_name in enumerate(y_names):
+        for col_idx, col_name in enumerate(x_names):
+            label = clean_label(f"{row_name} {col_name}").upper()
+            matrix[row_idx][col_idx] = float(values.get(label, 0.0))
+    return matrix
+
+
+def boolean_segments(frame: pd.DataFrame, flag_col: str) -> pd.DataFrame:
+    if frame.empty or flag_col not in frame:
+        return pd.DataFrame()
+
+    rows: list[dict[str, Any]] = []
+    start_time = None
+    end_time = None
+    duration_s = 0.0
+    peak_floor = 0
+    peak_counter = 0
+
+    for _, record in frame.sort_values("captured_at").iterrows():
+        active = bool(record.get(flag_col))
+        if active and start_time is None:
+            start_time = record["captured_at"]
+            duration_s = 0.0
+            peak_floor = 0
+            peak_counter = 0
+
+        if active:
+            duration = float(record.get("duration_s") or 0)
+            duration_s += duration
+            end_time = record["captured_at"] + timedelta(seconds=duration)
+            peak_floor = max(peak_floor, int(record.get("floor_moving_people") or 0))
+            peak_counter = max(peak_counter, int(record.get("counter_stationary_people") or 0))
+            continue
+
+        if start_time is not None:
+            rows.append(
+                {
+                    "start": start_time,
+                    "end": end_time or record["captured_at"],
+                    "duration_s": duration_s,
+                    "peak_floor_moving": peak_floor,
+                    "peak_counter_stationary": peak_counter,
+                }
+            )
+            start_time = None
+
+    if start_time is not None:
+        rows.append(
+            {
+                "start": start_time,
+                "end": end_time or start_time,
+                "duration_s": duration_s,
+                "peak_floor_moving": peak_floor,
+                "peak_counter_stationary": peak_counter,
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def longest_true_duration(frame: pd.DataFrame, flag_col: str) -> float:
+    if frame.empty or flag_col not in frame:
+        return 0.0
+
+    current = 0.0
+    longest = 0.0
+    for _, record in frame.sort_values("captured_at").iterrows():
+        if bool(record.get(flag_col)):
+            current += float(record.get("duration_s") or 0)
+            longest = max(longest, current)
+        else:
+            current = 0.0
+    return longest
+
+
+def service_coverage_analysis(
+    targets: pd.DataFrame,
+    counter_zones: list[str],
+    floor_zones: list[str],
+    stationary_speed_cms: int,
+    moving_speed_cms: int,
+) -> dict[str, Any]:
+    empty = {
+        "frames": pd.DataFrame(),
+        "risk_floor": pd.DataFrame(),
+        "counter_stationary": pd.DataFrame(),
+        "risk_segments": pd.DataFrame(),
+    }
+    if targets.empty or not counter_zones or not floor_zones:
+        return empty
+
+    work = targets[targets["counted"]].copy()
+    if work.empty:
+        return empty
+
+    abs_speed = pd.to_numeric(work["speed_cms"], errors="coerce").fillna(0).abs()
+    work["stationary_like"] = (work["motion"] == "STATIONARY") | (abs_speed <= stationary_speed_cms)
+    work["moving_like"] = work["motion"].isin(["APPROACHING", "MOVING_AWAY"]) | (abs_speed >= moving_speed_cms)
+    work["counter_stationary"] = work["zone_label"].isin(counter_zones) & work["stationary_like"]
+    work["counter_present"] = work["zone_label"].isin(counter_zones)
+    work["floor_moving"] = work["zone_label"].isin(floor_zones) & work["moving_like"]
+    work["floor_present"] = work["zone_label"].isin(floor_zones)
+
+    frames = (
+        work.groupby("captured_at", as_index=False)
+        .agg(
+            duration_s=("duration_s", "max"),
+            counter_stationary_people=("counter_stationary", "sum"),
+            counter_present_people=("counter_present", "sum"),
+            floor_moving_people=("floor_moving", "sum"),
+            floor_present_people=("floor_present", "sum"),
+        )
+        .sort_values("captured_at")
+    )
+    frames["counter_stationary"] = frames["counter_stationary_people"] > 0
+    frames["floor_moving"] = frames["floor_moving_people"] > 0
+    frames["service_risk"] = frames["counter_stationary"] & frames["floor_moving"]
+
+    risk_times = set(frames.loc[frames["service_risk"], "captured_at"])
+    risk_floor = work[work["floor_moving"] & work["captured_at"].isin(risk_times)].copy()
+    counter_stationary = work[work["counter_stationary"]].copy()
+
+    return {
+        "frames": frames,
+        "risk_floor": risk_floor,
+        "counter_stationary": counter_stationary,
+        "risk_segments": boolean_segments(frames, "service_risk"),
+    }
+
+
 def render_heatmap_banner(title: str, subtitle: str) -> None:
     st.markdown(
         f"""
@@ -1276,8 +1435,19 @@ active_zone_labels = current_zone_labels(current_heatmap_matrix, x_names, y_name
 active_zone_text = ", ".join(active_zone_labels[:3]) if active_zone_labels else ("Clear" if is_live else "Offline")
 top_zone = zone_table.iloc[0]["zone"] if not zone_table.empty else "none"
 top_zone_label = clean_label(top_zone).upper()
+zone_options = all_zone_labels(x_names, y_names)
 
-view_options = ["Heatmap", "Crowd Concentration", "Executive View", "Zones", "Dwell", "Campaign Impact", "Targets", "Data Health"]
+view_options = [
+    "Heatmap",
+    "Crowd Concentration",
+    "Service Coverage",
+    "Executive View",
+    "Zones",
+    "Dwell",
+    "Campaign Impact",
+    "Targets",
+    "Data Health",
+]
 active_view = st.radio("View", view_options, horizontal=True, label_visibility="collapsed")
 
 if active_view == "Heatmap":
@@ -1419,6 +1589,239 @@ elif active_view == "Crowd Concentration":
         }
     )
     st.dataframe(display_concentration.round(2), width="stretch", hide_index=True)
+
+elif active_view == "Service Coverage":
+    render_heatmap_banner(
+        "Service Coverage",
+        "Compares stationary counter presence with moving floor activity. Use it as an operations signal, not identity detection.",
+    )
+
+    default_counter = default_counter_zones(target_view, zone_options)
+    config_cols = st.columns([1.25, 1.6, 0.9, 0.9])
+    with config_cols[0]:
+        counter_zones = st.multiselect("Counter / staff zone", zone_options, default=default_counter)
+    with config_cols[1]:
+        default_floor_zones = [zone for zone in zone_options if zone not in counter_zones]
+        floor_zones = st.multiselect("Customer floor zones", zone_options, default=default_floor_zones)
+    with config_cols[2]:
+        stationary_speed_cms = st.slider("Stationary tolerance", min_value=0, max_value=20, value=3, step=1)
+    with config_cols[3]:
+        moving_speed_cms = st.slider("Movement threshold", min_value=1, max_value=60, value=6, step=1)
+
+    service = service_coverage_analysis(
+        target_view,
+        counter_zones,
+        floor_zones,
+        stationary_speed_cms=stationary_speed_cms,
+        moving_speed_cms=moving_speed_cms,
+    )
+    service_frames = service["frames"]
+    risk_floor = service["risk_floor"]
+    counter_stationary = service["counter_stationary"]
+    risk_segments = service["risk_segments"]
+
+    if service_frames.empty:
+        st.info("Choose at least one counter zone and one customer floor zone to calculate service coverage.")
+    else:
+        counter_stationary_minutes = float(service_frames.loc[service_frames["counter_stationary"], "duration_s"].sum()) / 60.0
+        floor_motion_minutes = float(service_frames.loc[service_frames["floor_moving"], "duration_s"].sum()) / 60.0
+        risk_minutes = float(service_frames.loc[service_frames["service_risk"], "duration_s"].sum()) / 60.0
+        risk_floor_person_minutes = float(risk_floor["duration_s"].sum()) / 60.0 if not risk_floor.empty else 0.0
+        longest_counter_s = longest_true_duration(service_frames, "counter_stationary")
+        longest_risk_s = longest_true_duration(service_frames, "service_risk")
+        risk_share = risk_minutes / floor_motion_minutes if floor_motion_minutes else 0.0
+        latest_service = service_frames.iloc[-1]
+
+        if is_live and bool(latest_service.get("service_risk")):
+            current_signal = "Risk now"
+            current_note = "Counter stationary while floor movement is active"
+        elif is_live and bool(latest_service.get("counter_stationary")):
+            current_signal = "Counter held"
+            current_note = "Counter is stationary; floor movement not active"
+        elif is_live and bool(latest_service.get("floor_moving")):
+            current_signal = "Floor active"
+            current_note = "Movement without counter-stationary overlap"
+        elif is_live:
+            current_signal = "Clear"
+            current_note = "No selected-zone activity right now"
+        else:
+            current_signal = "Offline"
+            current_note = "Waiting for fresh radar uploads"
+
+        coverage_cols = st.columns(4)
+        with coverage_cols[0]:
+            callout_card("Current Signal", current_signal, current_note)
+        with coverage_cols[1]:
+            callout_card("Counter Stationary", format_minutes(counter_stationary_minutes), "Selected counter zone hold time")
+        with coverage_cols[2]:
+            callout_card("Floor Movement", format_minutes(floor_motion_minutes), "Any movement in selected floor zones")
+        with coverage_cols[3]:
+            callout_card("Service Risk", format_minutes(risk_minutes), f"{risk_share * 100:.0f}% of floor movement time")
+
+        detail_cols = st.columns(4)
+        with detail_cols[0]:
+            callout_card("Longest Counter Hold", format_seconds(longest_counter_s), "Continuous stationary stretch")
+        with detail_cols[1]:
+            callout_card("Longest Risk Stretch", format_seconds(longest_risk_s), "Continuous overlap stretch")
+        with detail_cols[2]:
+            callout_card("Risk Windows", str(len(risk_segments)), "Counter stationary + floor motion")
+        with detail_cols[3]:
+            callout_card("Moving Customer Time", format_minutes(risk_floor_person_minutes), "Person-minutes during risk windows")
+
+        risk_values = (
+            risk_floor.groupby("zone_label")["duration_s"].sum().div(60).to_dict()
+            if not risk_floor.empty
+            else {}
+        )
+        risk_matrix = zone_value_matrix(risk_values, x_names, y_names)
+        render_retail_floor_heatmap(
+            risk_matrix,
+            current_heatmap_matrix,
+            current_targets,
+            x_names,
+            y_names,
+            "Where Floor Motion Happened While Counter Was Stationary",
+            is_live,
+            unit="motion-min",
+            metric_label="Overlap motion",
+        )
+
+        timeline = service_frames.copy()
+        timeline["minute"] = timeline["captured_at"].dt.floor("min")
+        timeline_parts = []
+        for metric, flag_col in [
+            ("Counter stationary", "counter_stationary"),
+            ("Floor movement", "floor_moving"),
+            ("Service risk overlap", "service_risk"),
+        ]:
+            part = timeline[["minute", "duration_s"]].copy()
+            part["metric"] = metric
+            part["minutes"] = part["duration_s"].where(timeline[flag_col], 0) / 60.0
+            timeline_parts.append(part[["minute", "metric", "minutes"]])
+
+        timeline_long = (
+            pd.concat(timeline_parts, ignore_index=True)
+            .groupby(["minute", "metric"], as_index=False)["minutes"]
+            .sum()
+        )
+
+        timeline_fig = px.bar(
+            timeline_long,
+            x="minute",
+            y="minutes",
+            color="metric",
+            barmode="group",
+            title="Service Coverage Timeline",
+            color_discrete_map={
+                "Counter stationary": "#2563eb",
+                "Floor movement": "#0f9f6e",
+                "Service risk overlap": "#c2410c",
+            },
+        )
+        timeline_fig.update_layout(
+            height=360,
+            margin=dict(l=10, r=10, t=52, b=10),
+            paper_bgcolor="#ffffff",
+            plot_bgcolor="#ffffff",
+            font_color="#111827",
+            xaxis_title="Time",
+            yaxis_title="Minutes per time bucket",
+            legend_title="Signal",
+        )
+        st.plotly_chart(timeline_fig, width="stretch")
+
+        left, right = st.columns(2)
+        with left:
+            if not risk_floor.empty:
+                risk_zone_table = (
+                    risk_floor.groupby("zone_label", as_index=False)
+                    .agg(
+                        motion_minutes=("duration_s", lambda values: float(values.sum()) / 60.0),
+                        observations=("captured_at", "count"),
+                        avg_speed_cms=("speed_cms", "mean"),
+                    )
+                    .sort_values(["motion_minutes", "observations"], ascending=False)
+                )
+                fig = px.bar(
+                    risk_zone_table,
+                    x="motion_minutes",
+                    y="zone_label",
+                    orientation="h",
+                    title="Floor Motion During Counter Hold",
+                    color="motion_minutes",
+                    color_continuous_scale=["#dbeafe", "#0f9f6e", "#c2410c"],
+                )
+                fig.update_layout(
+                    height=360,
+                    margin=dict(l=10, r=10, t=52, b=10),
+                    paper_bgcolor="#ffffff",
+                    plot_bgcolor="#ffffff",
+                    font_color="#111827",
+                    xaxis_title="Moving person-minutes",
+                    yaxis_title="",
+                    coloraxis_showscale=False,
+                )
+                st.plotly_chart(fig, width="stretch")
+            else:
+                st.info("No floor movement overlapped with a stationary counter signal in this window.")
+
+        with right:
+            if not counter_stationary.empty:
+                counter_zone_table = (
+                    counter_stationary.groupby("zone_label", as_index=False)
+                    .agg(
+                        stationary_minutes=("duration_s", lambda values: float(values.sum()) / 60.0),
+                        observations=("captured_at", "count"),
+                    )
+                    .sort_values(["stationary_minutes", "observations"], ascending=False)
+                )
+                fig = px.bar(
+                    counter_zone_table,
+                    x="stationary_minutes",
+                    y="zone_label",
+                    orientation="h",
+                    title="Counter Stationary Concentration",
+                    color="stationary_minutes",
+                    color_continuous_scale=["#dbeafe", "#2563eb"],
+                )
+                fig.update_layout(
+                    height=360,
+                    margin=dict(l=10, r=10, t=52, b=10),
+                    paper_bgcolor="#ffffff",
+                    plot_bgcolor="#ffffff",
+                    font_color="#111827",
+                    xaxis_title="Stationary person-minutes",
+                    yaxis_title="",
+                    coloraxis_showscale=False,
+                )
+                st.plotly_chart(fig, width="stretch")
+            else:
+                st.info("No stationary signal in the selected counter zone yet.")
+
+        st.subheader("Service Risk Windows")
+        if risk_segments.empty:
+            st.write("No overlap windows found in the selected analysis window.")
+        else:
+            display_segments = risk_segments.sort_values("start", ascending=False).head(25).copy()
+            display_segments["Start"] = display_segments["start"].dt.strftime("%b %d %H:%M:%S")
+            display_segments["End"] = display_segments["end"].dt.strftime("%b %d %H:%M:%S")
+            display_segments["Duration"] = display_segments["duration_s"].map(format_seconds)
+            display_segments = display_segments.rename(
+                columns={
+                    "peak_floor_moving": "Peak floor moving",
+                    "peak_counter_stationary": "Peak counter stationary",
+                }
+            )
+            st.dataframe(
+                display_segments[["Start", "End", "Duration", "Peak floor moving", "Peak counter stationary"]],
+                width="stretch",
+                hide_index=True,
+            )
+
+        st.info(
+            "Interpretation: if the counter zone is stationary while selected floor zones show repeated movement, "
+            "the dashboard flags a service opportunity. This does not identify staff or customers; it infers behavior from zone, speed, and dwell."
+        )
 
 elif active_view == "Executive View":
     left, right = st.columns([1.25, 1])
