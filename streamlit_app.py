@@ -399,6 +399,8 @@ def secret(name: str, default: str = "") -> str:
 SUPABASE_URL = secret("SUPABASE_URL").rstrip("/")
 SUPABASE_SERVICE_ROLE_KEY = secret("SUPABASE_SERVICE_ROLE_KEY")
 DASHBOARD_PASSWORD = secret("DASHBOARD_PASSWORD")
+SETTINGS_TABLE = "dashboard_settings"
+ZONE_LABELS_KEY = "zone_labels"
 SNAPSHOT_COLUMNS = ",".join(
     [
         "captured_at",
@@ -515,6 +517,53 @@ def fetch_sensor_ids() -> list[str]:
     )
     response.raise_for_status()
     return sorted({row["sensor_id"] for row in response.json() if row.get("sensor_id")})
+
+
+@st.cache_data(ttl=30)
+def fetch_dashboard_setting(setting_key: str) -> dict[str, Any]:
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        return {}
+
+    try:
+        response = requests.get(
+            f"{SUPABASE_URL}/rest/v1/{SETTINGS_TABLE}",
+            headers=supabase_headers(),
+            params={"select": "value", "setting_key": f"eq.{setting_key}", "limit": "1"},
+            timeout=10,
+        )
+        response.raise_for_status()
+    except requests.RequestException:
+        return {}
+
+    rows = response.json()
+    if not rows:
+        return {}
+
+    value = rows[0].get("value") or {}
+    return value if isinstance(value, dict) else {}
+
+
+def save_dashboard_setting(setting_key: str, value: dict[str, Any]) -> tuple[bool, str]:
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        return False, "Supabase is not configured."
+
+    headers = supabase_headers()
+    headers["Prefer"] = "resolution=merge-duplicates,return=minimal"
+    payload = {"setting_key": setting_key, "value": value, "updated_at": datetime.now(timezone.utc).isoformat()}
+
+    try:
+        response = requests.post(
+            f"{SUPABASE_URL}/rest/v1/{SETTINGS_TABLE}",
+            headers=headers,
+            json=payload,
+            timeout=10,
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        return False, str(exc)
+
+    fetch_dashboard_setting.clear()
+    return True, "Saved."
 
 
 def empty_matrix(rows: int, cols: int) -> list[list[float]]:
@@ -872,7 +921,12 @@ def coerce_matrix(matrix: Any, rows: int, cols: int) -> list[list[float]]:
     return coerced
 
 
-def current_zone_labels(current_matrix: list[list[float]], x_names: list[str], y_names: list[str]) -> list[str]:
+def current_zone_labels(
+    current_matrix: list[list[float]],
+    x_names: list[str],
+    y_names: list[str],
+    zone_aliases: dict[str, str] | None = None,
+) -> list[str]:
     labels: list[str] = []
     for row_idx, row in enumerate(current_matrix):
         for col_idx, value in enumerate(row):
@@ -880,7 +934,7 @@ def current_zone_labels(current_matrix: list[list[float]], x_names: list[str], y
             if count <= 0 or row_idx >= len(y_names) or col_idx >= len(x_names):
                 continue
             zone = clean_label(f"{y_names[row_idx]} {x_names[col_idx]}").upper()
-            labels.append(f"{zone} ({count})")
+            labels.append(f"{zone_display_name(zone, zone_aliases)} ({count})")
     return labels
 
 
@@ -977,6 +1031,22 @@ def apply_selection_filter(frame: pd.DataFrame, column: str, selected: list[str]
 
 def all_zone_labels(x_names: list[str], y_names: list[str]) -> list[str]:
     return [clean_label(f"{row_name} {col_name}").upper() for row_name in y_names for col_name in x_names]
+
+
+def default_zone_name(zone_label: str) -> str:
+    return clean_label(zone_label).title()
+
+
+def zone_display_name(zone_label: str, zone_aliases: dict[str, str] | None = None) -> str:
+    canonical = clean_label(zone_label).upper()
+    alias = (zone_aliases or {}).get(canonical, "").strip()
+    return alias or default_zone_name(canonical)
+
+
+def display_zone_list(zone_labels: list[str], zone_aliases: dict[str, str] | None = None) -> str:
+    if not zone_labels:
+        return ""
+    return ", ".join(zone_display_name(zone, zone_aliases) for zone in zone_labels)
 
 
 def default_counter_zones(targets: pd.DataFrame, zone_options: list[str]) -> list[str]:
@@ -1142,6 +1212,7 @@ def owner_location_summary(
     concentration_table: pd.DataFrame,
     x_names: list[str],
     y_names: list[str],
+    zone_aliases: dict[str, str] | None = None,
 ) -> pd.DataFrame:
     current = coerce_matrix(current_matrix, len(y_names), len(x_names))
     zone_lookup = {
@@ -1186,6 +1257,7 @@ def owner_location_summary(
                     "row": row_idx,
                     "col": col_idx,
                     "zone_label": zone_label,
+                    "display_zone": zone_display_name(zone_label, zone_aliases),
                     "dwell_minutes": dwell,
                     "occupied_minutes": occupied,
                     "estimated_visits": visits,
@@ -1291,9 +1363,10 @@ def render_owner_floor_map(owner_zones: pd.DataFrame, x_names: list[str], y_name
             if float(row["risk_minutes"]) > 0:
                 metrics.append(f"Risk {format_minutes(float(row['risk_minutes']))}")
 
+            display_zone = str(row.get("display_zone") or zone_label)
             cards.append(
                 f'<div class="owner-zone-card {escape(str(row["status_class"]))}">'
-                f'<div><div class="owner-zone-name">{escape(zone_label)}</div>'
+                f'<div><div class="owner-zone-name">{escape(display_zone)}</div>'
                 f'<div class="owner-zone-status">{escape(str(row["owner_status"]))}</div>'
                 f'<div class="owner-zone-note">{escape(str(row["owner_note"]))}</div></div>'
                 f'<div><div class="owner-zone-metrics">'
@@ -1774,6 +1847,8 @@ previous_summary = summarize_period(previous_df)
 latest = df.iloc[-1]
 targets = target_observations(df)
 target_view = enrich_targets(targets)
+previous_targets = target_observations(previous_df)
+previous_target_view = enrich_targets(previous_targets)
 zone_table = zone_summary(df, x_names, y_names)
 previous_zone_table = zone_summary(previous_df, x_names, y_names) if not previous_df.empty else pd.DataFrame()
 visits_by_zone = zone_visit_counts(df, x_names, y_names)
@@ -1782,6 +1857,13 @@ zone_table["avg_dwell_s"] = zone_table.apply(
     lambda row: (row["dwell_minutes"] * 60 / row["estimated_visits"]) if row["estimated_visits"] else 0,
     axis=1,
 )
+if not previous_zone_table.empty:
+    previous_visits_by_zone = zone_visit_counts(previous_df, x_names, y_names)
+    previous_zone_table["estimated_visits"] = previous_zone_table["zone"].map(previous_visits_by_zone).fillna(0).astype(int)
+    previous_zone_table["avg_dwell_s"] = previous_zone_table.apply(
+        lambda row: (row["dwell_minutes"] * 60 / row["estimated_visits"]) if row["estimated_visits"] else 0,
+        axis=1,
+    )
 
 zone_dwell_matrix = empty_matrix(len(y_names), len(x_names))
 zone_occupied_matrix = empty_matrix(len(y_names), len(x_names))
@@ -1792,6 +1874,11 @@ for _, record in df.iterrows():
     matrix_add(zone_occupied_matrix, occupied, duration_s / 60.0)
 
 concentration_buckets, crowd_pressure_matrix, concentration_table = crowd_concentration(df, x_names, y_names)
+_, _, previous_concentration_table = (
+    crowd_concentration(previous_df, x_names, y_names)
+    if not previous_df.empty
+    else ({}, empty_matrix(len(y_names), len(x_names)), pd.DataFrame())
+)
 sessions = occupied_sessions(df, session_gap_s=session_gap_s)
 latest_age_s = (datetime.now(timezone.utc) - latest["captured_at"].to_pydatetime()).total_seconds()
 is_live = latest_age_s <= LIVE_FEED_TIMEOUT_S
@@ -1810,11 +1897,18 @@ if not is_live:
 latest_zone_now = coerce_matrix(latest.get("zone_now") or [], len(y_names), len(x_names))
 current_heatmap_matrix = latest_zone_now if is_live else empty_matrix(len(y_names), len(x_names))
 current_targets = current_target_points(latest, is_live, x_edges, y_edges)
-active_zone_labels = current_zone_labels(current_heatmap_matrix, x_names, y_names)
+zone_options = all_zone_labels(x_names, y_names)
+stored_zone_aliases = fetch_dashboard_setting(ZONE_LABELS_KEY)
+session_zone_aliases = st.session_state.get("zone_aliases", {})
+zone_aliases = {
+    clean_label(key).upper(): str(value).strip()
+    for key, value in {**stored_zone_aliases, **session_zone_aliases}.items()
+    if clean_label(key).upper() in zone_options and str(value).strip()
+}
+active_zone_labels = current_zone_labels(current_heatmap_matrix, x_names, y_names, zone_aliases)
 active_zone_text = ", ".join(active_zone_labels[:3]) if active_zone_labels else ("Clear" if is_live else "Offline")
 top_zone = zone_table.iloc[0]["zone"] if not zone_table.empty else "none"
-top_zone_label = clean_label(top_zone).upper()
-zone_options = all_zone_labels(x_names, y_names)
+top_zone_label = zone_display_name(clean_label(top_zone).upper(), zone_aliases)
 
 view_options = [
     "Owner Brief",
@@ -1824,8 +1918,9 @@ view_options = [
     "Executive View",
     "Zones",
     "Dwell",
-    "Campaign Impact",
+    "Campaign Compare",
     "Targets",
+    "Setup",
     "Data Health",
 ]
 active_view = st.radio("View", view_options, horizontal=True, label_visibility="collapsed")
@@ -1851,6 +1946,7 @@ if active_view == "Owner Brief":
         concentration_table,
         x_names,
         y_names,
+        zone_aliases,
     )
 
     top_owner_zone = owner_zones.sort_values(["attention_score", "dwell_minutes"], ascending=False).iloc[0]
@@ -1883,6 +1979,10 @@ if active_view == "Owner Brief":
         trend_change = ((trend_current - trend_previous) / trend_previous) * 100
         direction = "up" if trend_change >= 0 else "down"
         trend_text = f"{direction} {abs(trend_change):.0f}% vs previous {hours}h window"
+    top_owner_name = str(top_owner_zone["display_zone"])
+    movement_zone_name = str(movement_zone["display_zone"])
+    risk_zone_name = str(risk_zone["display_zone"])
+    quiet_zone_name = str(quiet_zone["display_zone"])
 
     render_heatmap_banner(
         "Owner Brief",
@@ -1899,13 +1999,13 @@ if active_view == "Owner Brief":
     with brief_cols[1]:
         callout_card(
             "Main Attention",
-            str(top_owner_zone["zone_label"]),
+            top_owner_name,
             f"{format_minutes(float(top_owner_zone['dwell_minutes']))} dwell, {trend_text}",
         )
     with brief_cols[2]:
         callout_card(
             "Movement Hotspot",
-            str(movement_zone["zone_label"]) if float(movement_zone["moving_minutes"]) > 0 else "NONE",
+            movement_zone_name if float(movement_zone["moving_minutes"]) > 0 else "NONE",
             f"{format_minutes(float(movement_zone['moving_minutes']))} customer motion",
         )
     with brief_cols[3]:
@@ -1918,9 +2018,9 @@ if active_view == "Owner Brief":
     render_owner_floor_map(owner_zones, x_names, y_names)
 
     story_lines = [
-        f"The strongest attention zone is {top_owner_zone['zone_label']} with {format_minutes(float(top_owner_zone['dwell_minutes']))} of measured dwell.",
-        f"The busiest movement zone is {movement_zone['zone_label']} with {format_minutes(float(movement_zone['moving_minutes']))} of motion.",
-        f"The quiet or pass-through area to inspect is {quiet_zone['zone_label']}; people are not staying there long.",
+        f"The strongest attention zone is {top_owner_name} with {format_minutes(float(top_owner_zone['dwell_minutes']))} of measured dwell.",
+        f"The busiest movement zone is {movement_zone_name} with {format_minutes(float(movement_zone['moving_minutes']))} of motion.",
+        f"The quiet or pass-through area to inspect is {quiet_zone_name}; people are not staying there long.",
     ]
     if risk_minutes > 0:
         risk_share = risk_minutes / floor_motion_minutes if floor_motion_minutes else 0.0
@@ -1930,26 +2030,26 @@ if active_view == "Owner Brief":
     else:
         story_lines.append("No counter-stationary service-risk overlap was detected in this window.")
     if float(top_owner_zone["crowd_pressure"]) > 0:
-        story_lines.append(f"Group attention appeared around {top_owner_zone['zone_label']}; that area may be drawing shared interest.")
+        story_lines.append(f"Group attention appeared around {top_owner_name}; that area may be drawing shared interest.")
 
     actions: list[tuple[str, str]] = []
     if risk_minutes >= 3:
         actions.append(
             (
                 "Check service coverage",
-                f"Review counter behavior when {risk_zone['zone_label']} is active; the system saw {format_minutes(risk_minutes)} of overlap.",
+                f"Review counter behavior when {risk_zone_name} is active; the system saw {format_minutes(risk_minutes)} of overlap.",
             )
         )
     actions.append(
         (
             "Protect the attention winner",
-            f"Keep {top_owner_zone['zone_label']} tidy and stocked; it is currently doing the most work for the store.",
+            f"Keep {top_owner_name} tidy and stocked; it is currently doing the most work for the store.",
         )
     )
     actions.append(
         (
             "Improve the quiet zone",
-            f"Try a clearer price sign, product move, or staff prompt near {quiet_zone['zone_label']} and compare tomorrow.",
+            f"Try a clearer price sign, product move, or staff prompt near {quiet_zone_name} and compare tomorrow.",
         )
     )
 
@@ -1958,7 +2058,7 @@ if active_view == "Owner Brief":
         render_owner_brief(story_lines, actions)
     with right:
         owner_display = owner_zones.sort_values(["attention_score", "dwell_minutes"], ascending=False).head(6).copy()
-        owner_display["Zone"] = owner_display["zone_label"]
+        owner_display["Zone"] = owner_display["display_zone"]
         owner_display["Signal"] = owner_display["owner_status"]
         owner_display["Dwell"] = owner_display["dwell_minutes"].map(format_minutes)
         owner_display["Movement"] = owner_display["moving_minutes"].map(format_minutes)
@@ -2497,61 +2597,190 @@ elif active_view == "Dwell":
             hide_index=True,
         )
 
-elif active_view == "Campaign Impact":
-    st.markdown('<div class="section-note">Current window compared with the immediately preceding window of the same length.</div>', unsafe_allow_html=True)
-    comp_cols = st.columns(4)
-    comp_cols[0].metric(
-        "Visits",
-        f"{int(summary['estimated_visits'])}",
-        format_delta(summary["estimated_visits"], previous_summary["estimated_visits"]),
-    )
-    comp_cols[1].metric(
-        "Dwell Person-Min",
-        f"{summary['person_minutes']:.1f}",
-        format_delta(summary["person_minutes"], previous_summary["person_minutes"]),
-    )
-    comp_cols[2].metric(
-        "Avg Dwell",
-        format_seconds(summary["avg_dwell_s"]),
-        format_delta(summary["avg_dwell_s"], previous_summary["avg_dwell_s"]),
-    )
-    comp_cols[3].metric(
-        "Engagement Rate",
-        f"{summary['engagement_rate'] * 100:.0f}%",
-        format_delta(summary["engagement_rate"], previous_summary["engagement_rate"]),
+elif active_view == "Campaign Compare":
+    render_heatmap_banner(
+        "Campaign Compare",
+        f"Compares the current {hours}h window with the previous {hours}h window for one store location.",
     )
 
-    previous_x, previous_y, _, _ = zone_config(previous_df) if not previous_df.empty else (x_names, y_names, x_edges, y_edges)
-    previous_zone_table = zone_summary(previous_df, previous_x, previous_y) if not previous_df.empty else pd.DataFrame()
-    if not previous_zone_table.empty:
-        comparison = zone_table[["zone", "dwell_minutes", "estimated_visits"]].merge(
-            previous_zone_table[["zone", "dwell_minutes"]].rename(columns={"dwell_minutes": "previous_dwell_minutes"}),
-            on="zone",
+    campaign_zone = st.selectbox(
+        "Campaign / display location",
+        zone_options,
+        format_func=lambda zone: zone_display_name(zone, zone_aliases),
+    )
+    campaign_name = zone_display_name(campaign_zone, zone_aliases)
+
+    def zone_row(table: pd.DataFrame, zone_label: str) -> pd.Series | None:
+        if table.empty:
+            return None
+        working = table.copy()
+        working["zone_label"] = working["zone"].map(lambda value: clean_label(value).upper())
+        match = working[working["zone_label"] == zone_label]
+        return None if match.empty else match.iloc[0]
+
+    def metric_from_row(row: pd.Series | None, column: str) -> float:
+        if row is None or column not in row:
+            return 0.0
+        return float(row[column] or 0)
+
+    def target_minutes(table: pd.DataFrame, zone_label: str, behaviors: list[str]) -> float:
+        if table.empty:
+            return 0.0
+        filtered = table[(table["zone_label"] == zone_label) & table["behavior"].isin(behaviors)]
+        return float(filtered["duration_s"].sum()) / 60.0 if not filtered.empty else 0.0
+
+    def crowd_minutes(table: pd.DataFrame, zone_label: str) -> float:
+        if table.empty:
+            return 0.0
+        working = table.copy()
+        working["zone_label"] = working["zone"].map(lambda value: clean_label(value).upper())
+        match = working[working["zone_label"] == zone_label]
+        return float(match.iloc[0]["crowd_pressure"] or 0) if not match.empty else 0.0
+
+    after_row = zone_row(zone_table, campaign_zone)
+    before_row = zone_row(previous_zone_table, campaign_zone)
+    after_dwell = metric_from_row(after_row, "dwell_minutes")
+    before_dwell = metric_from_row(before_row, "dwell_minutes")
+    after_visits = metric_from_row(after_row, "estimated_visits")
+    before_visits = metric_from_row(before_row, "estimated_visits")
+    after_avg_dwell = metric_from_row(after_row, "avg_dwell_s")
+    before_avg_dwell = metric_from_row(before_row, "avg_dwell_s")
+    after_motion = target_minutes(target_view, campaign_zone, ["Approaching", "Leaving"])
+    before_motion = target_minutes(previous_target_view, campaign_zone, ["Approaching", "Leaving"])
+    after_stationary = target_minutes(target_view, campaign_zone, ["Engaged stationary"])
+    before_stationary = target_minutes(previous_target_view, campaign_zone, ["Engaged stationary"])
+    after_crowd = crowd_minutes(concentration_table, campaign_zone)
+    before_crowd = crowd_minutes(previous_concentration_table, campaign_zone)
+
+    dwell_delta = format_delta(after_dwell, before_dwell)
+    visit_delta = format_delta(after_visits, before_visits)
+    motion_delta = format_delta(after_motion, before_motion)
+    avg_delta = format_delta(after_avg_dwell, before_avg_dwell)
+
+    if before_dwell <= 0 and after_dwell > 0:
+        campaign_result = "New attention"
+        campaign_note = "This location has measurable attention now; keep watching the next window."
+    elif after_dwell > before_dwell * 1.15:
+        campaign_result = "Lift"
+        campaign_note = "The location is holding more attention than the previous period."
+    elif after_dwell < before_dwell * 0.85 and before_dwell > 0:
+        campaign_result = "Drop"
+        campaign_note = "Attention fell. Refresh the sign, product facing, or staff prompt."
+    elif after_motion > before_motion * 1.25 and after_avg_dwell <= before_avg_dwell:
+        campaign_result = "Passing interest"
+        campaign_note = "More people moved through, but they did not stay longer."
+    else:
+        campaign_result = "Stable"
+        campaign_note = "No major change yet. Let the campaign run longer or adjust the offer."
+
+    comp_cols = st.columns(5)
+    with comp_cols[0]:
+        callout_card("Campaign Result", campaign_result, campaign_note)
+    comp_cols[1].metric("Dwell", format_minutes(after_dwell), dwell_delta)
+    comp_cols[2].metric("Visits", f"{int(after_visits)}", visit_delta)
+    comp_cols[3].metric("Avg Stay", format_seconds(after_avg_dwell), avg_delta)
+    comp_cols[4].metric("Movement", format_minutes(after_motion), motion_delta)
+
+    compare_data = pd.DataFrame(
+        [
+            {"Metric": "Dwell minutes", "Before": before_dwell, "After": after_dwell},
+            {"Metric": "Estimated visits", "Before": before_visits, "After": after_visits},
+            {"Metric": "Movement minutes", "Before": before_motion, "After": after_motion},
+            {"Metric": "Stationary minutes", "Before": before_stationary, "After": after_stationary},
+            {"Metric": "Group pressure", "Before": before_crowd, "After": after_crowd},
+        ]
+    )
+    compare_long = compare_data.melt(id_vars="Metric", var_name="Window", value_name="Value")
+    fig = px.bar(
+        compare_long,
+        x="Metric",
+        y="Value",
+        color="Window",
+        barmode="group",
+        title=f"Before vs After: {campaign_name}",
+        color_discrete_map={"Before": "#94a3b8", "After": "#0f9f6e"},
+    )
+    fig.update_layout(
+        height=380,
+        margin=dict(l=10, r=10, t=52, b=10),
+        paper_bgcolor="#ffffff",
+        plot_bgcolor="#ffffff",
+        font_color="#111827",
+        xaxis_title="",
+        yaxis_title="Minutes / count",
+        legend_title="Window",
+    )
+    st.plotly_chart(fig, width="stretch")
+
+    st.subheader("Campaign Brief")
+    brief_lines = [
+        f"{campaign_name} recorded {format_minutes(after_dwell)} of dwell in the current window versus {format_minutes(before_dwell)} before.",
+        f"Movement was {format_minutes(after_motion)} now versus {format_minutes(before_motion)} before.",
+        f"Average stay is {format_seconds(after_avg_dwell)} now versus {format_seconds(before_avg_dwell)} before.",
+    ]
+    if after_motion > before_motion and after_avg_dwell <= before_avg_dwell:
+        brief_lines.append("People are noticing or passing the location, but the display is not holding them yet.")
+    elif after_dwell > before_dwell:
+        brief_lines.append("The location is doing more work than before; this is a positive campaign signal.")
+    else:
+        brief_lines.append("The location has not improved yet; adjust the product facing, price message, or staff prompt.")
+
+    render_owner_brief(
+        brief_lines,
+        [
+            (
+                "Run one controlled change",
+                f"Change only one thing at {campaign_name}, then compare this same view after the next {hours}h window.",
+            ),
+            (
+                "Watch dwell, not only visits",
+                "A good campaign should increase stay time or returns, not just people walking past.",
+            ),
+        ],
+    )
+
+    st.subheader("All Location Lift")
+    if previous_zone_table.empty:
+        st.info("Previous-period comparison will appear once there is enough history.")
+    else:
+        comparison = zone_table[["zone", "dwell_minutes", "estimated_visits"]].copy()
+        comparison["zone_label"] = comparison["zone"].map(lambda value: clean_label(value).upper())
+        previous_comp = previous_zone_table[["zone", "dwell_minutes", "estimated_visits"]].copy()
+        previous_comp["zone_label"] = previous_comp["zone"].map(lambda value: clean_label(value).upper())
+        comparison = comparison.merge(
+            previous_comp[["zone_label", "dwell_minutes", "estimated_visits"]].rename(
+                columns={
+                    "dwell_minutes": "previous_dwell_minutes",
+                    "estimated_visits": "previous_visits",
+                }
+            ),
+            on="zone_label",
             how="left",
         )
         comparison["previous_dwell_minutes"] = comparison["previous_dwell_minutes"].fillna(0)
+        comparison["previous_visits"] = comparison["previous_visits"].fillna(0)
         comparison["dwell_lift_pct"] = comparison.apply(
             lambda row: ((row["dwell_minutes"] - row["previous_dwell_minutes"]) / row["previous_dwell_minutes"] * 100)
             if row["previous_dwell_minutes"] > 0
             else None,
             axis=1,
         )
-        st.subheader("Zone Lift")
+        comparison["Store location"] = comparison["zone_label"].map(lambda zone: zone_display_name(zone, zone_aliases))
         st.dataframe(
-            comparison.sort_values("dwell_minutes", ascending=False).rename(
+            comparison.sort_values("dwell_minutes", ascending=False)[
+                ["Store location", "dwell_minutes", "previous_dwell_minutes", "estimated_visits", "previous_visits", "dwell_lift_pct"]
+            ].rename(
                 columns={
-                    "zone": "Zone",
                     "dwell_minutes": "Current dwell min",
-                    "estimated_visits": "Current visits",
                     "previous_dwell_minutes": "Previous dwell min",
+                    "estimated_visits": "Current visits",
+                    "previous_visits": "Previous visits",
                     "dwell_lift_pct": "Dwell lift %",
                 }
             ).round(2),
             width="stretch",
             hide_index=True,
         )
-    else:
-        st.info("Previous-period comparison will appear once there is enough history.")
 
 elif active_view == "Targets":
     latest_targets = latest_targets_table(latest)
@@ -2758,6 +2987,57 @@ elif active_view == "Targets":
         "LD2450 target fields are position, speed, distance, angle, and resolution. "
         "They are useful for movement and zone behavior, but not reliable for age, identity, height, or body-size classification."
     )
+
+elif active_view == "Setup":
+    render_heatmap_banner(
+        "Zone Naming Setup",
+        "Rename radar zones into store language. These names make Owner Brief and Campaign Compare easier to read.",
+    )
+
+    settings_ready = bool(stored_zone_aliases)
+    if not settings_ready:
+        st.info(
+            "Zone names will work in this session immediately. To persist them across devices and redeploys, "
+            "run the updated supabase_schema.sql once in Supabase SQL Editor."
+        )
+
+    st.subheader("Store Location Names")
+    with st.form("zone_name_setup"):
+        new_aliases: dict[str, str] = {}
+        for row_idx, row_name in enumerate(y_names):
+            cols = st.columns(len(x_names))
+            for col_idx, col_name in enumerate(x_names):
+                technical = clean_label(f"{row_name} {col_name}").upper()
+                with cols[col_idx]:
+                    friendly = st.text_input(
+                        technical,
+                        value=zone_aliases.get(technical, default_zone_name(technical)),
+                        key=f"zone_alias_{row_idx}_{col_idx}",
+                    ).strip()
+                    if friendly:
+                        new_aliases[technical] = friendly
+
+        save_names = st.form_submit_button("Save zone names")
+
+    if save_names:
+        st.session_state["zone_aliases"] = new_aliases
+        ok, message = save_dashboard_setting(ZONE_LABELS_KEY, new_aliases)
+        if ok:
+            st.success("Zone names saved to Supabase.")
+        else:
+            st.warning(
+                "Zone names are active for this session, but could not be saved to Supabase yet. "
+                "Run the updated supabase_schema.sql, then save again."
+            )
+            st.caption(message)
+        st.rerun()
+
+    st.subheader("Name Preview")
+    preview_rows = [
+        {"Technical zone": zone, "Store name": zone_display_name(zone, zone_aliases)}
+        for zone in zone_options
+    ]
+    st.dataframe(pd.DataFrame(preview_rows), width="stretch", hide_index=True)
 
 elif active_view == "Data Health":
     latest_network = latest.get("network") or {}

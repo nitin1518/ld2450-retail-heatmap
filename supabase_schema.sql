@@ -37,7 +37,14 @@ create index if not exists sensor_snapshots_time_idx
 create index if not exists sensor_snapshots_hottest_zone_idx
   on public.sensor_snapshots (hottest_zone, captured_at desc);
 
+create table if not exists public.dashboard_settings (
+  setting_key text primary key,
+  value jsonb not null default '{}'::jsonb,
+  updated_at timestamptz not null default now()
+);
+
 alter table public.sensor_snapshots enable row level security;
+alter table public.dashboard_settings enable row level security;
 
 -- Edge Functions and the Streamlit dashboard should use a server-side service role key.
 -- No public table policy is created here, so browser clients cannot read or write directly.
