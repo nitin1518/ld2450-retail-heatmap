@@ -203,6 +203,151 @@ CSS = """
     margin-top: 8px;
   }
 
+  .dashboard-hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1.45fr) minmax(240px, .78fr) minmax(240px, .78fr);
+    gap: 12px;
+    align-items: stretch;
+    margin: 2px 0 14px;
+  }
+
+  .hero-primary,
+  .hero-side {
+    background: #ffffff;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    box-shadow: 0 1px 2px rgba(16, 24, 40, .04);
+  }
+
+  .hero-primary {
+    position: relative;
+    overflow: hidden;
+    padding: 18px 20px;
+    border-left: 5px solid var(--green);
+  }
+
+  .hero-primary:after {
+    content: "";
+    position: absolute;
+    inset: 0 0 0 auto;
+    width: 38%;
+    background: linear-gradient(90deg, rgba(255,255,255,0), rgba(154,215,202,.26));
+    pointer-events: none;
+  }
+
+  .hero-eyebrow {
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+
+  .hero-title {
+    margin-top: 8px;
+    color: var(--ink);
+    font-size: clamp(28px, 3vw, 42px);
+    line-height: 1.02;
+    font-weight: 840;
+    max-width: 760px;
+  }
+
+  .hero-subtitle {
+    margin-top: 10px;
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 1.45;
+    max-width: 720px;
+  }
+
+  .hero-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 14px;
+  }
+
+  .hero-pill {
+    display: inline-flex;
+    align-items: center;
+    min-height: 28px;
+    border: 1px solid rgba(17, 24, 39, .08);
+    border-radius: 999px;
+    background: #f8fafc;
+    color: #344054;
+    padding: 5px 10px;
+    font-size: 12px;
+    font-weight: 750;
+  }
+
+  .hero-side {
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    min-height: 168px;
+  }
+
+  .hero-side .value {
+    color: var(--ink);
+    font-size: 28px;
+    line-height: 1.05;
+    font-weight: 820;
+    margin-top: 10px;
+  }
+
+  .hero-side .note {
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.4;
+    margin-top: 10px;
+  }
+
+  .hero-side.action {
+    border-left: 4px solid var(--amber);
+  }
+
+  .hero-side.service {
+    border-left: 4px solid var(--blue);
+  }
+
+  .section-heading {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 18px 0 10px;
+  }
+
+  .section-heading .title {
+    color: var(--ink);
+    font-size: 20px;
+    line-height: 1.15;
+    font-weight: 820;
+  }
+
+  .section-heading .subtitle {
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.4;
+    margin-top: 4px;
+  }
+
+  div[data-testid="stPlotlyChart"] {
+    background: #ffffff;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px;
+    box-shadow: 0 1px 2px rgba(16, 24, 40, .04);
+  }
+
+  div[data-testid="stDataFrame"] {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 1px 2px rgba(16, 24, 40, .04);
+  }
+
   div[data-testid="stMetric"] {
     background: var(--panel);
     border: 1px solid var(--line);
@@ -252,18 +397,28 @@ CSS = """
 
   .owner-floor-grid {
     display: grid;
-    gap: 10px;
+    gap: 12px;
   }
 
   .owner-zone-card {
-    min-height: 132px;
+    position: relative;
+    min-height: 148px;
     border: 1px solid var(--line);
     border-radius: 8px;
-    padding: 12px;
+    padding: 13px;
     background: #f8fafc;
     display: flex;
     flex-direction: column;
     justify-content: space-between;
+    overflow: hidden;
+  }
+
+  .owner-zone-card:before {
+    content: "";
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 5px;
+    background: #cbd5e1;
   }
 
   .owner-zone-card.live {
@@ -271,9 +426,17 @@ CSS = """
     border-color: rgba(15, 159, 110, .38);
   }
 
+  .owner-zone-card.live:before {
+    background: var(--green);
+  }
+
   .owner-zone-card.hot {
     background: #fff7ed;
     border-color: rgba(232, 110, 50, .38);
+  }
+
+  .owner-zone-card.hot:before {
+    background: #e86e32;
   }
 
   .owner-zone-card.move {
@@ -281,14 +444,26 @@ CSS = """
     border-color: rgba(37, 99, 235, .28);
   }
 
+  .owner-zone-card.move:before {
+    background: var(--blue);
+  }
+
   .owner-zone-card.risk {
     background: #fef2f2;
     border-color: rgba(194, 65, 12, .34);
   }
 
+  .owner-zone-card.risk:before {
+    background: var(--red);
+  }
+
   .owner-zone-card.pass {
     background: #fffbeb;
     border-color: rgba(183, 121, 31, .32);
+  }
+
+  .owner-zone-card.pass:before {
+    background: var(--amber);
   }
 
   .owner-zone-card.quiet {
@@ -302,6 +477,24 @@ CSS = """
     font-weight: 780;
     text-transform: uppercase;
     letter-spacing: .05em;
+  }
+
+  .owner-zone-topline {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    align-items: flex-start;
+  }
+
+  .owner-zone-badge {
+    border-radius: 999px;
+    background: rgba(255,255,255,.76);
+    border: 1px solid rgba(17, 24, 39, .08);
+    color: #344054;
+    font-size: 10px;
+    font-weight: 800;
+    padding: 4px 7px;
+    white-space: nowrap;
   }
 
   .owner-zone-status {
@@ -351,6 +544,23 @@ CSS = """
     background: linear-gradient(90deg, #9ad7ca, #14956f, #f0b84a);
   }
 
+  .owner-map-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: flex-end;
+  }
+
+  .owner-map-legend span {
+    border: 1px solid rgba(17, 24, 39, .08);
+    border-radius: 999px;
+    background: #f8fafc;
+    color: #344054;
+    padding: 4px 8px;
+    font-size: 11px;
+    font-weight: 750;
+  }
+
   .owner-brief-panel {
     background: var(--panel);
     border: 1px solid var(--line);
@@ -379,11 +589,93 @@ CSS = """
 
   .owner-action {
     border-left: 4px solid var(--green);
-    padding-left: 12px;
+    padding-left: 14px;
   }
 
   .owner-action strong {
     color: var(--ink);
+  }
+
+  .owner-action-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+
+  .owner-action-grid .callout-card {
+    margin-bottom: 0;
+    min-height: 132px;
+  }
+
+  .owner-rank-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+
+  .owner-rank-card {
+    background: #ffffff;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px;
+    box-shadow: 0 1px 2px rgba(16, 24, 40, .04);
+  }
+
+  .owner-rank-card .rank {
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+  }
+
+  .owner-rank-card .zone {
+    color: var(--ink);
+    font-size: 18px;
+    line-height: 1.15;
+    font-weight: 820;
+    margin-top: 8px;
+  }
+
+  .owner-rank-card .signal {
+    color: #344054;
+    font-size: 13px;
+    line-height: 1.35;
+    margin-top: 8px;
+  }
+
+  .owner-rank-card .mini-metrics {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 12px;
+  }
+
+  .owner-rank-card .mini-metrics span {
+    background: #f8fafc;
+    border: 1px solid rgba(17, 24, 39, .08);
+    border-radius: 999px;
+    color: #344054;
+    font-size: 11px;
+    font-weight: 750;
+    padding: 4px 7px;
+  }
+
+  @media (max-width: 980px) {
+    .dashboard-hero,
+    .owner-action-grid,
+    .owner-rank-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .heatmap-banner,
+    .owner-floor-title,
+    .section-heading {
+      align-items: flex-start;
+      flex-direction: column;
+    }
   }
 
   .block-container {
@@ -903,6 +1195,62 @@ def callout_card(label: str, value: str, note: str = "") -> None:
     )
 
 
+def render_section_heading(title: str, subtitle: str = "") -> None:
+    st.markdown(
+        f"""
+        <div class="section-heading">
+          <div>
+            <div class="title">{escape(title)}</div>
+            <div class="subtitle">{escape(subtitle)}</div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_owner_hero(
+    attention_zone: str,
+    attention_note: str,
+    people_value: str,
+    people_note: str,
+    service_value: str,
+    service_note: str,
+    action_title: str,
+    action_note: str,
+) -> None:
+    st.markdown(
+        f"""
+        <div class="dashboard-hero">
+          <div class="hero-primary">
+            <div class="hero-eyebrow">Owner brief</div>
+            <div class="hero-title">{escape(attention_zone)} is the main place to watch</div>
+            <div class="hero-subtitle">{escape(attention_note)}</div>
+            <div class="hero-pills">
+              <span class="hero-pill">Live: {escape(people_value)}</span>
+              <span class="hero-pill">{escape(people_note)}</span>
+            </div>
+          </div>
+          <div class="hero-side action">
+            <div>
+              <div class="hero-eyebrow">Next action</div>
+              <div class="value">{escape(action_title)}</div>
+              <div class="note">{escape(action_note)}</div>
+            </div>
+          </div>
+          <div class="hero-side service">
+            <div>
+              <div class="hero-eyebrow">Service watch</div>
+              <div class="value">{escape(service_value)}</div>
+              <div class="note">{escape(service_note)}</div>
+            </div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def clean_label(value: Any) -> str:
     return str(value or "").replace("_", " ").replace("-", " ")
 
@@ -1400,7 +1748,9 @@ def render_owner_floor_map(owner_zones: pd.DataFrame, x_names: list[str], y_name
             display_zone = str(row.get("display_zone") or zone_label)
             cards.append(
                 f'<div class="owner-zone-card {escape(str(row["status_class"]))}">'
-                f'<div><div class="owner-zone-name">{escape(display_zone)}</div>'
+                f'<div><div class="owner-zone-topline">'
+                f'<div class="owner-zone-name">{escape(display_zone)}</div>'
+                f'<div class="owner-zone-badge">{score_width:.0f}% pull</div></div>'
                 f'<div class="owner-zone-status">{escape(str(row["owner_status"]))}</div>'
                 f'<div class="owner-zone-note">{escape(str(row["owner_note"]))}</div></div>'
                 f'<div><div class="owner-zone-metrics">'
@@ -1415,7 +1765,9 @@ def render_owner_floor_map(owner_zones: pd.DataFrame, x_names: list[str], y_name
             '<div class="owner-floor-wrap">'
             '<div class="owner-floor-title"><div>'
             '<div class="title">Simple Store Location Map</div>'
-            '<div class="subtitle">Each block is a radar zone. The label tells the owner what is happening there.</div>'
+            '<div class="subtitle">Each block is a radar zone. Stronger bars mean more dwell, visits, movement, or group pressure.</div>'
+            '</div><div class="owner-map-legend">'
+            '<span>Live now</span><span>Main attention</span><span>Movement</span><span>Service watch</span>'
             '</div></div>'
             f'<div class="owner-floor-grid" style="grid-template-columns: repeat({max(len(x_names), 1)}, minmax(130px, 1fr));">'
             f'{"".join(cards)}'
@@ -1425,21 +1777,50 @@ def render_owner_floor_map(owner_zones: pd.DataFrame, x_names: list[str], y_name
     )
 
 
-def render_owner_brief(story_lines: list[str], actions: list[tuple[str, str]]) -> None:
+def render_owner_brief(story_lines: list[str], actions: list[tuple[str, str]], panel_title: str = "Today's Store Story") -> None:
     story_html = "".join(f"<li>{escape(line)}</li>" for line in story_lines)
     action_html = "".join(
         '<div class="callout-card owner-action">'
         '<div class="label">Suggested action</div>'
-        f'<div class="value">{escape(title)}</div>'
+        f'<div class="value">{escape(action_title)}</div>'
         f'<div class="note">{escape(note)}</div>'
         '</div>'
-        for title, note in actions
+        for action_title, note in actions
     )
     st.markdown(
-        f'<div class="owner-brief-panel"><h3>Today\'s Store Story</h3><ul>{story_html}</ul></div>',
+        f'<div class="owner-brief-panel"><h3>{escape(panel_title)}</h3><ul>{story_html}</ul></div>',
         unsafe_allow_html=True,
     )
-    st.markdown(action_html, unsafe_allow_html=True)
+    st.markdown(f'<div class="owner-action-grid">{action_html}</div>', unsafe_allow_html=True)
+
+
+def render_owner_rank_cards(owner_zones: pd.DataFrame, limit: int = 6) -> None:
+    if owner_zones.empty:
+        st.info("No ranked locations are available yet.")
+        return
+
+    cards: list[str] = []
+    for position, (_, row) in enumerate(
+        owner_zones.sort_values(["attention_score", "dwell_minutes"], ascending=False).head(limit).iterrows(),
+        start=1,
+    ):
+        metrics = [
+            f"Dwell {format_minutes(float(row['dwell_minutes']))}",
+            f"Move {format_minutes(float(row['moving_minutes']))}",
+            f"Now {int(row['now'])}",
+        ]
+        if float(row["crowd_pressure"]) > 0:
+            metrics.append(f"Group {format_minutes(float(row['crowd_pressure']))}")
+        cards.append(
+            '<div class="owner-rank-card">'
+            f'<div class="rank">Rank {position}</div>'
+            f'<div class="zone">{escape(str(row["display_zone"]))}</div>'
+            f'<div class="signal">{escape(str(row["owner_status"]))}: {escape(str(row["owner_note"]))}</div>'
+            f'<div class="mini-metrics">{"".join(f"<span>{escape(metric)}</span>" for metric in metrics)}</div>'
+            '</div>'
+        )
+
+    st.markdown(f'<div class="owner-rank-grid">{"".join(cards)}</div>', unsafe_allow_html=True)
 
 
 def previous_zone_dwell(previous_zone_table: pd.DataFrame, zone_label: str) -> float:
@@ -2332,17 +2713,17 @@ top_zone_label = zone_display_name(clean_label(top_zone).upper(), zone_aliases)
 
 view_options = [
     "Owner Brief",
-    "Room Layout",
-    "Time Replay",
-    "3D Activity Map",
     "Heatmap",
+    "Time Replay",
     "Crowd Concentration",
     "Service Coverage",
+    "Targets",
     "Executive View",
     "Zones",
     "Dwell",
     "Campaign Compare",
-    "Targets",
+    "Room Layout",
+    "3D Activity Map",
     "Setup",
     "Data Health",
 ]
@@ -2407,39 +2788,6 @@ if active_view == "Owner Brief":
     risk_zone_name = str(risk_zone["display_zone"])
     quiet_zone_name = str(quiet_zone["display_zone"])
 
-    render_heatmap_banner(
-        "Owner Brief",
-        "A plain-language read of the floor: where people are, what pulled attention, and what needs action.",
-    )
-
-    brief_cols = st.columns(4)
-    with brief_cols[0]:
-        callout_card(
-            "Right Now",
-            str(last_people_now) if is_live else "--",
-            active_zone_text if is_live else "Live feed is stale",
-        )
-    with brief_cols[1]:
-        callout_card(
-            "Main Attention",
-            top_owner_name,
-            f"{format_minutes(float(top_owner_zone['dwell_minutes']))} dwell, {trend_text}",
-        )
-    with brief_cols[2]:
-        callout_card(
-            "Movement Hotspot",
-            movement_zone_name if float(movement_zone["moving_minutes"]) > 0 else "NONE",
-            f"{format_minutes(float(movement_zone['moving_minutes']))} customer motion",
-        )
-    with brief_cols[3]:
-        callout_card(
-            "Service Watch",
-            format_minutes(risk_minutes),
-            f"{len(owner_risk_segments)} overlap windows" if not owner_risk_segments.empty else "No counter/floor overlap",
-        )
-
-    render_owner_floor_map(owner_zones, x_names, y_names)
-
     story_lines = [
         f"The strongest attention zone is {top_owner_name} with {format_minutes(float(top_owner_zone['dwell_minutes']))} of measured dwell.",
         f"The busiest movement zone is {movement_zone_name} with {format_minutes(float(movement_zone['moving_minutes']))} of motion.",
@@ -2476,22 +2824,49 @@ if active_view == "Owner Brief":
         )
     )
 
-    left, right = st.columns([1.35, 1])
+    hero_action_title, hero_action_note = actions[0]
+    people_value = f"{last_people_now} now" if is_live else "Offline"
+    people_note = active_zone_text if is_live else f"Last snapshot had {last_people_now}"
+    service_value = format_minutes(risk_minutes) if risk_minutes > 0 else "Clear"
+    service_note = (
+        f"{len(owner_risk_segments)} overlap windows detected"
+        if not owner_risk_segments.empty
+        else "No counter-stationary service risk in this window"
+    )
+    render_owner_hero(
+        top_owner_name,
+        f"{format_minutes(float(top_owner_zone['dwell_minutes']))} of dwell in the selected {hours}h window; {trend_text}.",
+        people_value,
+        people_note,
+        service_value,
+        service_note,
+        hero_action_title,
+        hero_action_note,
+    )
+
+    render_section_heading("Floor Snapshot", "The cards below translate radar activity into plain store-location signals.")
+    brief_cols = st.columns(4)
+    with brief_cols[0]:
+        callout_card("Right Now", str(last_people_now) if is_live else "--", active_zone_text if is_live else "Live feed is stale")
+    with brief_cols[1]:
+        callout_card("Main Attention", top_owner_name, f"{format_minutes(float(top_owner_zone['dwell_minutes']))} dwell, {trend_text}")
+    with brief_cols[2]:
+        callout_card(
+            "Movement Hotspot",
+            movement_zone_name if float(movement_zone["moving_minutes"]) > 0 else "None",
+            f"{format_minutes(float(movement_zone['moving_minutes']))} customer motion",
+        )
+    with brief_cols[3]:
+        callout_card("Service Watch", service_value, service_note)
+
+    render_owner_floor_map(owner_zones, x_names, y_names)
+
+    left, right = st.columns([1.05, 1])
     with left:
         render_owner_brief(story_lines, actions)
     with right:
-        owner_display = owner_zones.sort_values(["attention_score", "dwell_minutes"], ascending=False).head(6).copy()
-        owner_display["Zone"] = owner_display["display_zone"]
-        owner_display["Signal"] = owner_display["owner_status"]
-        owner_display["Dwell"] = owner_display["dwell_minutes"].map(format_minutes)
-        owner_display["Movement"] = owner_display["moving_minutes"].map(format_minutes)
-        owner_display["Now"] = owner_display["now"].astype(int)
-        st.subheader("Top Locations")
-        st.dataframe(
-            owner_display[["Zone", "Signal", "Now", "Dwell", "Movement"]],
-            width="stretch",
-            hide_index=True,
-        )
+        render_section_heading("Top Locations", "Ranked by dwell, visits, movement, and group pressure.")
+        render_owner_rank_cards(owner_zones)
 
 elif active_view == "Room Layout":
     render_heatmap_banner(
@@ -2762,16 +3137,8 @@ elif active_view == "Heatmap":
         "Retail Floor Heatmap",
         f"{hours}h dwell depth with live occupancy overlay. Darker cells held attention longer.",
     )
-    render_retail_floor_heatmap(
-        zone_dwell_matrix,
-        current_heatmap_matrix,
-        current_targets,
-        x_names,
-        y_names,
-        "Dwell Depth by Zone",
-        is_live,
-    )
 
+    render_section_heading("Read First", "A compact summary before the detailed zone heatmap.")
     metric_cols = st.columns(5)
     with metric_cols[0]:
         people_now_label = str(last_people_now) if is_live else "--"
@@ -2812,7 +3179,18 @@ elif active_view == "Heatmap":
     with insight_cols[3]:
         callout_card("Freshness", health_text, f"Last upload {format_seconds(latest_age_s)} ago")
 
-    st.subheader("Zone Ranking")
+    render_section_heading("Visual Heatmap", "Depth shows where attention accumulated; target markers show live position when online.")
+    render_retail_floor_heatmap(
+        zone_dwell_matrix,
+        current_heatmap_matrix,
+        current_targets,
+        x_names,
+        y_names,
+        "Dwell Depth by Zone",
+        is_live,
+    )
+
+    render_section_heading("Zone Ranking", "The most useful locations to inspect first.")
     ranking = zone_table.head(8).copy()
     if not ranking.empty:
         ranking["Zone"] = ranking["zone"].map(lambda value: clean_label(value).upper())
@@ -2859,6 +3237,7 @@ elif active_view == "Crowd Concentration":
             "3+ people together" if group_zone is not None and float(group_zone["group_minutes"]) > 0 else "No 3+ person gathering yet",
         )
 
+    render_section_heading("Where Groups Form", "This layer is useful for spotting shared attention, bottlenecks, and product draw.")
     render_retail_floor_heatmap(
         crowd_pressure_matrix,
         current_heatmap_matrix,
@@ -2871,7 +3250,7 @@ elif active_view == "Crowd Concentration":
         metric_label="Crowd pressure",
     )
 
-    st.subheader("Occupancy Pattern Heatmaps")
+    render_section_heading("Solo, Pair, Group", "Compare whether a zone is mainly browsed alone or attracts multiple people.")
     solo_col, pair_col, group_col = st.columns(3)
     with solo_col:
         render_heatmap(concentration_buckets["Solo"], x_names, y_names, "Solo Presence", "min")
@@ -2880,7 +3259,7 @@ elif active_view == "Crowd Concentration":
     with group_col:
         render_heatmap(concentration_buckets["Groups"], x_names, y_names, "Groups 3+", "min")
 
-    st.subheader("Crowd Pattern Ranking")
+    render_section_heading("Crowd Pattern Ranking", "Zones sorted by concentration behavior.")
     display_concentration = concentration_table.copy()
     display_concentration["Zone"] = display_concentration["zone"].map(lambda value: clean_label(value).upper())
     display_concentration = display_concentration[
@@ -3131,6 +3510,34 @@ elif active_view == "Service Coverage":
         )
 
 elif active_view == "Executive View":
+    render_heatmap_banner(
+        "Executive View",
+        "High-level traffic, attention, and sample health for quick reporting.",
+    )
+    render_section_heading("Retail Readout", f"Current {hours}h window compared with the previous matching window.")
+    readout_cols = st.columns(4)
+    readout_cols[0].metric(
+        "Avg People Present",
+        f"{summary['avg_people']:.2f}",
+        format_delta(summary["avg_people"], previous_summary["avg_people"]),
+    )
+    readout_cols[1].metric(
+        "Person-Minutes",
+        f"{summary['person_minutes']:.1f}",
+        format_delta(summary["person_minutes"], previous_summary["person_minutes"]),
+    )
+    readout_cols[2].metric(
+        "Passerby Snapshots",
+        f"{int(summary['passerby_snapshots'])}",
+        format_delta(summary["passerby_snapshots"], previous_summary["passerby_snapshots"]),
+    )
+    readout_cols[3].metric(
+        "Samples",
+        f"{int(summary['snapshots'])}",
+        f"{len(previous_df)} previous",
+    )
+
+    render_section_heading("Traffic And Attention", "Traffic over time on the left, strongest zones on the right.")
     left, right = st.columns([1.25, 1])
     with left:
         timeline = df[["captured_at", "people_now"]].copy()
@@ -3170,30 +3577,12 @@ elif active_view == "Executive View":
         )
         st.plotly_chart(fig, width="stretch")
 
-    st.subheader("Retail Readout")
-    readout_cols = st.columns(4)
-    readout_cols[0].metric(
-        "Avg People Present",
-        f"{summary['avg_people']:.2f}",
-        format_delta(summary["avg_people"], previous_summary["avg_people"]),
-    )
-    readout_cols[1].metric(
-        "Person-Minutes",
-        f"{summary['person_minutes']:.1f}",
-        format_delta(summary["person_minutes"], previous_summary["person_minutes"]),
-    )
-    readout_cols[2].metric(
-        "Passerby Snapshots",
-        f"{int(summary['passerby_snapshots'])}",
-        format_delta(summary["passerby_snapshots"], previous_summary["passerby_snapshots"]),
-    )
-    readout_cols[3].metric(
-        "Samples",
-        f"{int(summary['snapshots'])}",
-        f"{len(previous_df)} previous",
-    )
-
 elif active_view == "Zones":
+    render_heatmap_banner(
+        "Zone Performance",
+        "Detailed zone-by-zone readout for dwell, occupied time, visits, and activity heat.",
+    )
+    render_section_heading("Zone Maps", "Compare person-minutes with occupied-time to separate popularity from duration.")
     left, right = st.columns(2)
     with left:
         render_retail_floor_heatmap(
@@ -3208,7 +3597,7 @@ elif active_view == "Zones":
     with right:
         render_heatmap(zone_occupied_matrix, x_names, y_names, "Zone Occupied-Time Heatmap", "min")
 
-    st.subheader("Zone Performance")
+    render_section_heading("Zone Table", "Operational export for all measured zones.")
     display_zone_table = zone_table.copy()
     display_zone_table["dwell_share"] = (display_zone_table["dwell_share"] * 100).round(1)
     display_zone_table["avg_dwell"] = display_zone_table["avg_dwell_s"].map(format_seconds)
@@ -3234,6 +3623,11 @@ elif active_view == "Zones":
     )
 
 elif active_view == "Dwell":
+    render_heatmap_banner(
+        "Dwell Analysis",
+        "Time-based view of how long people stayed and how dwell is distributed.",
+    )
+    render_section_heading("Dwell Over Time", "Use this to see whether attention is growing, fading, or shifting across zones.")
     left, right = st.columns([1, 1])
     with left:
         hourly = explode_hourly_zone_dwell(df, x_names, y_names)
@@ -3271,7 +3665,7 @@ elif active_view == "Dwell":
         else:
             st.info("No occupied sessions in this window.")
 
-    st.subheader("Recent Sessions")
+    render_section_heading("Recent Sessions", "Latest occupied stretches merged using the sidebar session gap.")
     if sessions.empty:
         st.write("No occupied sessions.")
     else:
