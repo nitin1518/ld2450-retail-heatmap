@@ -15,7 +15,7 @@ from streamlit_autorefresh import st_autorefresh
 
 
 st.set_page_config(
-    page_title="LD2450 Retail Intelligence",
+    page_title="Home Intelligence",
     layout="wide",
 )
 
@@ -733,7 +733,7 @@ def require_password() -> None:
     if st.session_state.get("authenticated"):
         return
 
-    st.title("LD2450 Retail Intelligence")
+    st.title("Home Intelligence")
     entered = st.text_input("Password", type="password")
 
     if entered == DASHBOARD_PASSWORD:
@@ -2577,7 +2577,7 @@ st.markdown(CSS, unsafe_allow_html=True)
 st.markdown(
     """
     <div class="page-title">
-      <h1>LD2450 Retail Intelligence</h1>
+      <h1>Home Intelligence</h1>
       <p>Occupancy, dwell, zone engagement, and campaign-lift analytics from ESP32 + HLK-LD2450 snapshots.</p>
     </div>
     """,
